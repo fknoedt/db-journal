@@ -1,0 +1,18 @@
+#!/usr/bin/env php
+<?php
+
+require_once __DIR__ . '/../vendor/autoload.php';
+
+use Symfony\Component\Console\Application;
+use DbJournal\Commands\DbJournalCommand;
+
+use Symfony\Component\Dotenv\Dotenv;
+
+// @TODO: implement .env.test
+// @TODO: handle exception
+$dotenv = new Dotenv();
+$dotenv->load(__DIR__.'/../.env');
+
+$app = new Application();
+$app->add(new DbJournalCommand());
+$app->run();

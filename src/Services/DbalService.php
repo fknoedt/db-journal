@@ -5,14 +5,16 @@ namespace DbJournal\Services;
 use DbJournal\Exceptions\DbJournalConfigException;
 use \Doctrine\DBAL\Configuration;
 use \Doctrine\DBAL\DriverManager;
+use \Doctrine\DBAL\Schema\AbstractSchemaManager;
+use \Doctrine\DBAL\Connection;
 
 class DbalService
 {
     /**
      * DBAL Connection Singleton
-     * @var
+     * @var \Doctrine\DBAL\Connection
      */
-    protected static $connection;
+    protected static $conn;
 
     /**
      * Check if every required Database Connection Env Var is set
@@ -46,25 +48,31 @@ class DbalService
     }
 
     /**
-     * Check if the tables necessary to run the journal are created
-     * @throws \DbJournalConfigException
+     * Wrapper for self::getSchemaManager()->tablesExist()
+     * @param string $table
+     * @return bool;
      */
-    public static function validateTable(): void
+    public static function tableExists(string $table): bool
     {
-        $tableExists = false;
+        return self::getSchemaManager()->tablesExist($table);
+    }
 
-        if (! $tableExists) {
-            throw new DbJournalConfigException("@TODO: implement " . __METHOD__);
-        }
+    /**
+     * Wrapper for getConnection()->getSchemaManager() *IDE purposes
+     * @return AbstractSchemaManager
+     */
+    public static function getSchemaManager(): AbstractSchemaManager
+    {
+        return self::getConnection()->getSchemaManager();
     }
 
     /**
      * Initialize and return a singleton DBAL Connection
      * @return \Doctrine\DBAL\Connection
      */
-    public static function getConnection()
+    public static function getConnection(): Connection
     {
-        if (! self::$connection) {
+        if (! self::$conn) {
 
             // ensure the configs are set on $_ENV
             self::validateEnv();
@@ -79,13 +87,10 @@ class DbalService
                 'driver' =>     $_ENV['DB_DRIVER']
             );
 
-            self::$connection = DriverManager::getConnection($connectionParams, $config);
+            self::$conn = DriverManager::getConnection($connectionParams, $config);
 
-            // if the connection is set, let's ensure - once - that the required tables are created
-            self::validateTable();
         }
 
-        return self::$connection;
+        return self::$conn;
     }
-
 }

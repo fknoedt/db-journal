@@ -63,39 +63,42 @@ class DbJournalCommand extends Command
      */
     protected function execute(InputInterface $input, OutputInterface $output)
     {
+        // main console action
         $action = $input->getArgument('action');
 
-        $service = new DbJournalService();
+        $output->writeln("Action: " . $input->getArgument('action'));
+
+        // `setup` will create the table, so let's not check for it
+        $ignoreTable = ($action == 'setup');
+
+        // checks on the constructor
+        $service = new DbJournalService($ignoreTable);
 
         switch ($action) {
 
+            case 'setup':
+                $service->setup();
+                $output->writeln("Table created - setup complete");
+                break;
+
             case 'update-journal':
-
                 $service->updateJournal();
-
                 break;
 
             case 'dump-journal':
-
                 $service->dumpJournal();
-
                 break;
 
             case 'apply-journal':
-
                 $service->applyJournal();
-
                 break;
 
             default:
-
                 throw new CommandNotFoundException("Invalid action: {$action}");
 
         }
 
-        // outputs multiple lines to the console (adding "\n" at the end of each line)
-        $output->writeln("Action: " . $input->getArgument('action'));
-
+        $output->writeln("Execution time: {@TODO}");
     }
 
 

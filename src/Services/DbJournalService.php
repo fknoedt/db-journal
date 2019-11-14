@@ -18,7 +18,7 @@ class DbJournalService
      * Main journal table
      * @var string
      */
-    protected $internalTable;
+    protected $internalTable = 'db_journal';
 
     /**
      * Tables to journal
@@ -66,7 +66,7 @@ class DbJournalService
         $this->outputBuffer = [];
 
         // main journal table name can be defined on the .env file to allow prefixes/schemas
-        $this->internalTable = $_ENV['DB_JOURNAL_TABLE'] ?? null;
+        $this->internalTable = $_ENV['DB_JOURNAL_TABLE'] ?? $this->internalTable;
 
         if (! $this->internalTable) {
             throw new DbJournalConfigException("Table name not defined (DB_JOURNAL_TABLE) on .env");
@@ -82,6 +82,10 @@ class DbJournalService
 
         // custom or default `updated_at` column name
         $this->updatedAtColumnName = $_ENV['DB_JOURNAL_UPDATED_AT_NAME'] ?? $this->updatedAtColumnName;
+
+        if (empty($this->createdAtColumnName) || empty($this->updatedAtColumnName)) {
+            throw new DbJournalConfigException("You cannot have an empty entry for DB_JOURNAL_CREATED_AT_NAME or DB_JOURNAL_UPDATED_AT_NAME on .env");
+        }
 
         // custom tables to journal
         if ($conf = $_ENV['DB_JOURNAL_TABLES_FILTER'] ?? null) {
@@ -102,6 +106,7 @@ class DbJournalService
     /**
      * Create the internal table required to run the journal
      * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\DBALException
      */
     public function setup(): void
     {
@@ -212,7 +217,14 @@ class DbJournalService
 
     public function populateDatabase($startTime): void
     {
-        dd('DO IT: ' . __METHOD__);
+        // iterate on the tables to journal
+        foreach ($this->tables as $table) {
+
+            // TODO: create record for each table
+
+        }
+
+        dd('DO IT: ' . implode(', ', $this->tables));
     }
 
     public function dump()

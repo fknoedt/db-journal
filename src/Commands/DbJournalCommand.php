@@ -2,6 +2,7 @@
 
 namespace DbJournal\Commands;
 
+use DbJournal\Exceptions\DbJournalConfigException;
 use DbJournal\Services\DbalService;
 use DbJournal\Services\DbJournalService;
 use Symfony\Component\Console\Command\Command;
@@ -25,20 +26,28 @@ class DbJournalCommand extends Command
     protected static $defaultName = 'db-journal:command';
 
     /**
+     * Execution time
+     * @var
+     */
+    protected static $startTime;
+
+    /**
      * @todo it
      * @var
      */
     var $attribute;
 
+    /**
+     * DbJournalCommand constructor.
+     */
     public function __construct()
     {
-        $this->attribute = 'value set';
-
+        $this::$startTime = microtime();
         parent::__construct();
     }
 
     /**
-     *
+     * Standard Command method
      */
     public function configure()
     {
@@ -55,7 +64,7 @@ class DbJournalCommand extends Command
     }
 
     /**
-     *
+     * Run a Command
      * @param InputInterface $input
      * @param OutputInterface $output
      * @throws \Symfony\Component\Console\Exception\ExceptionInterface
@@ -63,6 +72,8 @@ class DbJournalCommand extends Command
      */
     protected function execute(InputInterface $input, OutputInterface $output)
     {
+        $returnCode = 1;
+
         // main console action
         $action = $input->getArgument('action');
 
@@ -71,34 +82,54 @@ class DbJournalCommand extends Command
         // `setup` will create the table, so let's not check for it
         $ignoreTable = ($action == 'setup');
 
-        // checks on the constructor
+        // the constructor will load configs and run checks
         $service = new DbJournalService($ignoreTable);
 
-        switch ($action) {
+        try {
 
-            case 'setup':
-                $service->setup();
-                $output->writeln("Table created - setup complete");
-                break;
+            switch ($action) {
 
-            case 'update-journal':
-                $service->updateJournal();
-                break;
+                case 'setup':
+                    $service->setup();
+                    break;
 
-            case 'dump-journal':
-                $service->dumpJournal();
-                break;
+                case 'init':
+                    // @TODO: datetime as param
+                    $service->init();
+                    break;
 
-            case 'apply-journal':
-                $service->applyJournal();
-                break;
+                case 'update':
+                    $service->update();
+                    break;
 
-            default:
-                throw new CommandNotFoundException("Invalid action: {$action}");
+                case 'dump':
+                    $service->dump();
+                    break;
+
+                case 'apply':
+                    $service->apply();
+                    break;
+
+                default:
+                    throw new CommandNotFoundException("Invalid action: {$action}");
+
+            }
+
+        }
+        catch (DbJournalConfigException $e) {
+
+            // @TODO: differentiate these functional error messages
+            $output->writeln($e->getMessage());
 
         }
 
+        if($buffer = $service->getBufferClean()) {
+            $output->writeln($buffer);
+        }
+
         $output->writeln("Execution time: {@TODO}");
+
+        return $returnCode;
     }
 
 

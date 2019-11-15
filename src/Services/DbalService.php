@@ -5,6 +5,7 @@ namespace DbJournal\Services;
 use DbJournal\Exceptions\DbJournalConfigException;
 use \Doctrine\DBAL\Configuration;
 use \Doctrine\DBAL\DriverManager;
+use Doctrine\DBAL\Platforms\AbstractPlatform;
 use \Doctrine\DBAL\Schema\AbstractSchemaManager;
 use \Doctrine\DBAL\Connection;
 
@@ -15,6 +16,12 @@ class DbalService
      * @var \Doctrine\DBAL\Connection
      */
     protected static $conn;
+
+    /**
+     * Multidimensional array: table => [[column1], [column2]...]
+     * @var
+     */
+    protected static $tablesColumnsMap;
 
     /**
      * Check if every required Database Connection Env Var is set
@@ -67,6 +74,15 @@ class DbalService
     }
 
     /**
+     * Wrapper for getConnection()->getDatabasePlatform()
+     * @return AbstractPlatform
+     */
+    public function getPlatform(): AbstractPlatform
+    {
+        return $this->getConnection()->getDatabasePlatform();
+    }
+
+    /**
      * Initialize and return a singleton DBAL Connection
      * @return \Doctrine\DBAL\Connection
      */
@@ -92,5 +108,44 @@ class DbalService
         }
 
         return self::$conn;
+    }
+
+    /**
+     * Query and retrieve all tables from the database
+     * @return array
+     */
+    public static function retrieveTables(): array
+    {
+        return self::getSchemaManager()->listTables();
+    }
+
+    /**
+     * [Create a singleton and] return a 'Table' => ['column1' => $column1Object, 'column2' => $column2Object, ...] multidimensional array
+     * @return array
+     */
+    public static function getTablesColumnsMap(): array
+    {
+        // initialize table/column map
+        if (! isset(self::$tablesColumnsMap)) {
+
+            foreach (self::retrieveTables() as $table) {
+                foreach ($table->getColumns() as $column) {
+                    self::$tablesColumnsMap[$table->getName()][$column->getName()] = $column;
+                }
+            }
+
+        }
+        return self::$tablesColumnsMap;
+    }
+
+    /**
+     * Check in the TablesColumnsMap if the given table has the given column
+     * @param $tableName
+     * @param $columnName
+     * @return bool
+     */
+    public static function tableHasColumn($tableName, $columnName): bool
+    {
+        return isset(self::getTablesColumnsMap()[$tableName][$columnName]);
     }
 }

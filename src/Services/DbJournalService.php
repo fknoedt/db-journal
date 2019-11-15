@@ -6,13 +6,34 @@ use DbJournal\Exceptions\DbJournalConfigException;
 use Doctrine\DBAL\Platforms\AbstractPlatform;
 use Doctrine\DBAL\Schema\Schema;
 use PHPUnit\Framework\MockObject\Exception;
+use Symfony\Component\Console\Output\OutputInterface;
 
 class DbJournalService
 {
     /**
+     * Human-readable Project Name
+     */
+    const PROJECT_NAME = 'DbJournal';
+
+    /**
+     * Repository Manager URL
+     */
+    const REPO_URL = 'https://github.com/fknoedt/db-journal';
+
+    /**
+     * Composer user/package name
+     */
+    const COMPOSER_PACKAGE = 'https://github.com/fknoedt/db-journal';
+
+    /**
      * @var \Doctrine\DBAL\Connection
      */
     protected $conn;
+
+    /**
+     * @var \Symfony\Component\Console\Output\OutputInterface
+     */
+    protected $outputInterface;
 
     /**
      * Main journal table
@@ -42,32 +63,47 @@ class DbJournalService
      * Datetime format for input and stored values
      * @var string
      */
-    protected $dateFormat = 'Y-m-d H:i:s';
+    CONST DB_DATETIME_FORMAT = 'Y-m-d H:i:s';
 
     /**
-     * The methods can output buffer to be used externally (e.g. from the Console)
-     * @var
+     * Date format for input and stored values
+     * @var string
      */
-    public $outputBuffer;
+    CONST DB_DATE_FORMAT = 'Y-m-d';
+
+    /**
+     * Execution time (start) with milliseconds
+     * @var mixed
+     */
+    protected $appStartTime;
 
     /**
      * DbJournalService constructor.
-     * This class is tight coupled with doctrine/dbal so no DI here =)
+     * This class is tight coupled with doctrine/dbal so no DI for the DB Connection
      * For testing, the database can be mocked with a .env.test file
-     *
-     * @param $ignoreTable
+     * @param $output -- OutputInterface
+     * @param $ignoreTable -- do not check if the main db table exists
      * @throws DbJournalConfigException
      */
-    public function __construct($ignoreTable = false)
+    public function __construct(OutputInterface $output=null, $ignoreTable = false)
     {
+        // performance purpose
+        $this->appStartTime = microtime();
+
+        // let's start the output to be verbose
+        $this->outputInterface = $output;
+
+        // \Doctrine\DBAL\Connection
         $this->conn = DbalService::getConnection();
 
-        // @TODO: a logger with verbose levels would be nice
-        $this->outputBuffer = [];
+        $this->output('DB Connection OK', OutputInterface::VERBOSITY_VERBOSE);
 
-        // main journal table name can be defined on the .env file to allow prefixes/schemas
-        $this->internalTable = $_ENV['DB_JOURNAL_TABLE'] ?? $this->internalTable;
+        // load and set properties for .env confs
+        $this->loadConfigs();
 
+        $this->output('Configs loaded', OutputInterface::VERBOSITY_VERBOSE);
+
+        // internalTable is defined within loadConfigs()
         if (! $this->internalTable) {
             throw new DbJournalConfigException("Table name not defined (DB_JOURNAL_TABLE) on .env");
         }
@@ -76,6 +112,31 @@ class DbJournalService
         if (! DbalService::tableExists($this->internalTable) && ! $ignoreTable) {
             throw new DbJournalConfigException("Table `{$this->internalTable}` doesn't exist. Run `setup`.");
         }
+
+        $this->output("{$this->internalTable} table " . ($ignoreTable ? 'ignored' : 'created'), OutputInterface::VERBOSITY_VERBOSE);
+    }
+
+    /**
+     * Write a $msg to the OutputInterface
+     * @param $msg
+     * @param $verboseLevel -- OutputInterface::VERBOSITY_*
+     * @param bool $linebreak -- break lines?
+     */
+    public function output($msg, $verboseLevel=OutputInterface::VERBOSITY_NORMAL, $linebreak=true): void
+    {
+        if ($this->outputInterface) {
+            $this->outputInterface->write($msg, $linebreak, $verboseLevel);
+        }
+    }
+
+    /**
+     * Load and set properties for .env confs
+     * @throws DbJournalConfigException
+     */
+    public function loadConfigs(): void
+    {
+        // main journal table name can be defined on the .env file to allow prefixes/schemas
+        $this->internalTable = $_ENV['DB_JOURNAL_TABLE'] ?? $this->internalTable;
 
         // custom or default `created_at` column name
         $this->createdAtColumnName = $_ENV['DB_JOURNAL_CREATED_AT_NAME'] ?? $this->createdAtColumnName;
@@ -100,7 +161,6 @@ class DbJournalService
         else {
             $this->tables = [];
         }
-
     }
 
     /**
@@ -119,54 +179,143 @@ class DbJournalService
         $table = $schema->createTable($this->internalTable);
         $table->setComment('Each table being monitored will have an entry on this table');
 
-        $table->addColumn("table", "string", ["length" => 256]);
-        $table->setPrimaryKey(array("table"));
+        $table->addColumn("table_name", "string", ["length" => 256]);
+        $table->setPrimaryKey(array("table_name"));
 
         $table->addColumn("last_journal", "datetime", ["default" => 'CURRENT_TIMESTAMP']);
 
-        $platform = $this->conn->getDatabasePlatform();
+        $table->addColumn("last_execution_time_miliseconds", "float", ["notnull" => false]);
 
-        // get SQL for the table above
-        $queries = $schema->toSql($platform);
+        // generate DDL for the table
+        $queries = $schema->toSql($this->getPlatform());
 
         // and run it
         foreach ($queries as $query) {
+            $this->output($query, OutputInterface::VERBOSITY_VERBOSE);
             $this->conn->exec($query);
         }
 
-        $this->appendBuffer("Table {$this->internalTable} created");
+        $this->output("Table {$this->internalTable} created");
+    }
+
+
+    /**
+     * Return the current DB Platform which extends AbstractPlatform
+     * @return AbstractPlatform
+     */
+    public function getPlatform(): AbstractPlatform
+    {
+        return $this->conn->getDatabasePlatform();
     }
 
     /**
-     * Return an array of table|last_journal
+     * Return the current datetime (CURRENT_TIMESTAMP)
+     * @return mixed
+     */
+    public function getDbCurrentTimestampSQL()
+    {
+        return $this->getPlatform()->getCurrentTimestampSQL();
+    }
+
+    /**
+     * Return an array of table_name|last_journal|last_execution_time_miliseconds
      * @return array
      */
-    public function getTablesLastJournal(): array
+    public function getLastJournals(): array
     {
         return $this->conn->fetchAll("SELECT * FROM {$this->internalTable};");
     }
 
     /**
-     * Ensure that every table journal will be updated to the current database timestamp
-     * @throws DbJournalConfigException
+     * Return an array of table_name
+     * @return array
      */
-    public function update()
+    public function getTablesLastJournal(): array
     {
-        $tables = $this->getTablesLastJournal();
-
-        if (empty($tables)) {
-            throw new DbJournalConfigException("DbJournal table ({$this->internalTable}) is empty. Run `init`.");
+        $tables = [];
+        foreach ($this->getLastJournals() as $journal) {
+            $tables[] = $journal['table_name'];
         }
-
-        dd($tables);
+        return $tables;
     }
 
     /**
-     * Create the initial records on the journal table
-     * @param null $startTime
+     * Return the current database time
+     * @return mixed
+     */
+    public function time()
+    {
+        // CURRENT_TIMESTAMP
+        $time = $this->getDbCurrentTimestampSQL();
+        return $this->conn->fetchColumn("SELECT {$time};");
+    }
+
+    /**
+     * Ensure that every table journal will be updated to the current database timestamp
+     * @param array $options
      * @throws DbJournalConfigException
      */
-    public function init($startTime=null): void
+    public function update(array $options): void
+    {
+        $journals = $this->getLastJournals();
+
+        if (empty($journals)) {
+            throw new DbJournalConfigException("DbJournal table ({$this->internalTable}) is empty. Run `init`.");
+        }
+
+        $startTime = $this->time();
+
+        // @TODO if $options['time']: prompt WILL DELETE THE CURRENT JOURNAL!
+
+        $forcedLastJournal = $options['time'] ?? null;
+
+        $this->output("Start time: {$startTime}", OutputInterface::VERBOSITY_VERBOSE);
+
+        foreach ($journals as $journal) {
+            $this->generateTableJournal($journal['table_name'], ($forcedLastJournal ? $forcedLastJournal : $journal['last_journal']));
+        }
+
+        // save journal file(s) at once then create record
+        $forcedLastJournal
+    }
+
+    public function generateTableJournal($table, $lastJournal)
+    {
+        $startTime = microtime(true);
+
+        $this->output("Journaling {$table} - last journal: {$lastJournal}");
+
+        if (DbalService::tableHasColumn($table, $this->createdAtColumnName)) {
+            // nice to have: Iterator
+            $inserts = $this->conn->fetchAll("SELECT * FROM {$table} WHERE {$this->createdAtColumnName} > ?", [$lastJournal]);
+
+            $totalInserts = count($inserts);
+
+            $this->output("{$totalInserts} insert statements to run", OutputInterface::VERBOSITY_VERBOSE);
+        }
+
+        if (DbalService::tableHasColumn($table, $this->updatedAtColumnName)) {
+
+            $updates = $this->conn->fetchAll("SELECT * FROM {$table} WHERE {$this->updatedAtColumnName} > ?", [$lastJournal]);
+
+            $totalUpdates = count($updates);
+
+            $this->output("{$totalUpdates} update statements to run", OutputInterface::VERBOSITY_VERBOSE);
+
+        }
+
+        $executionTime = microtime(true) - $startTime;
+
+        $this->conn->update($this->internalTable, ['last_journal' => $lastJournal, 'last_execution_time_miliseconds' => $executionTime], ['table_name' => $table]);
+
+    }
+
+    /**
+     * Create the initial records on the main journal table
+     * @param null $options
+     * @throws DbJournalConfigException
+     */
+    public function init($options): void
     {
         // no tables defined on .env: scan tables
         if (empty($this->tables)) {
@@ -177,20 +326,21 @@ class DbJournalService
                 throw new DbJournalConfigException("No table with either `{$this->createdAtColumnName}` or `{$this->updatedAtColumnName}` column name found. Your tables need one of these columns to enable journaling.");
             }
 
-            $this->appendBuffer(count($this->tables) . " Able Table(s) retrieved");
+            $this->output(count($this->tables) . " Able Table(s) retrieved", OutputInterface::VERBOSITY_VERBOSE);
 
         }
 
+        $startTime = $options['time'] ?? $this->time();
+
         if (!$startTime) {
-            $startTime = date($this->dateFormat);
-            $this->appendBuffer("Start time: {$startTime}");
+            $startTime = $this->time();
+            $this->output("Start time: {$startTime}", OutputInterface::VERBOSITY_VERBOSE);
         }
 
         // populate the journal with each able table starting from the timestamp
-        $this->populateDatabase($startTime);
+        $count = $this->populateDatabase($startTime);
 
-        $this->appendBuffer("Tables populated. Here we go.");
-
+        $this->output("{$count} table(s) populated. Here we go.");
     }
 
     /**
@@ -200,13 +350,14 @@ class DbJournalService
     public function retrieveAbleTables(): array
     {
         $tables = [];
-        // iterate on every table
-        foreach (DbalService::getSchemaManager()->listTables() as $table) {
 
-            foreach ($table->getColumns() as $column) {
+        // iterate on every table
+        foreach (DbalService::getTablesColumnsMap() as $table => $columns) {
+
+            foreach ($columns as $columnName => $column) {
                 // if the table has one or both columns,
-                if (in_array($column->getName(), [$this->createdAtColumnName, $this->updatedAtColumnName])) {
-                    $tables[] = $table->getName();
+                if (in_array($columnName, [$this->createdAtColumnName, $this->updatedAtColumnName])) {
+                    $tables[] = $table;
                     break;
                 }
             }
@@ -215,17 +366,33 @@ class DbJournalService
         return $tables;
     }
 
-    public function populateDatabase($startTime): void
+    /**
+     * Create a record on the journal for each $this->tables
+     * @param $startTime
+     * @return int
+     */
+    public function populateDatabase($startTime): int
     {
-        // iterate on the tables to journal
+        $count = 0;
+
+        // retrieve the existing records
+        $journalTables = $this->getTablesLastJournal();
+
+        // iterate and create a record on the journal for each table
         foreach ($this->tables as $table) {
 
-            // TODO: create record for each table
-
+            if (in_array($table, $journalTables)) {
+                $this->output("<info>Table {$table} was already in the Journal</info>", OutputInterface::VERBOSITY_VERBOSE);
+            }
+            else {
+                $this->conn->insert($this->internalTable, ['table_name' => $table, 'last_journal' => $startTime]);
+                $count++;
+            }
         }
 
-        dd('DO IT: ' . implode(', ', $this->tables));
+        return $count;
     }
+
 
     public function dump()
     {
@@ -235,37 +402,6 @@ class DbJournalService
     public function apply()
     {
         return __METHOD__;
-    }
-
-
-    /**
-     * SRP: these are auxiliary methods; the class manages the journal
-     * Append a string to the (array) output buffer
-     * @param $output
-     */
-    public function appendBuffer($output): void
-    {
-        $this->outputBuffer[] = $output;
-    }
-
-    /**
-     * Return the output buffer
-     * @return string
-     */
-    public function getBuffer($glue=PHP_EOL): string
-    {
-        return implode($glue, $this->outputBuffer);
-    }
-
-    /**
-     * Return the buffer and clean it
-     * @return string
-     */
-    public function getBufferClean(): string
-    {
-        $buffer = $this->getBuffer();
-        $this->outputBuffer = [];
-        return $buffer;
     }
 
 }

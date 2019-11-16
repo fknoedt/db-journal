@@ -8,12 +8,14 @@ use DbJournal\Services\DbJournalService;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Exception\CommandNotFoundException;
 use Symfony\Component\Console\Exception\InvalidOptionException;
+use Symfony\Component\Console\Formatter\OutputFormatterStyle;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 use Respect\Validation\Validator as v;
+use Symfony\Component\Console\Question\ConfirmationQuestion;
 
 /**
  * Main DbJournal's Command Class
@@ -41,10 +43,12 @@ class DbJournalCommand extends Command
         'setup' => 'Create the internal table required to run the journal',
         'init' => 'Create the initial records on the main journal table',
         'update' => 'Ensure that every table journal will be updated to the current database timestamp',
-        'dump' => '',
+        'dump' => 'Output the journal queries for the given filters',
         'apply' => '[WARNING] Apply the given Journal to the current database',
         'list' => 'List the available DbJournal commands',
-        'time' => 'Show the current database time'
+        'time' => 'Show the current database time',
+        'clean' => "Clean the existing journal records and files (warning, you won't be able to run pre-existing journals after this)",
+        'uninstall' => 'Remove DbJournal table and files'
     ];
 
     /**
@@ -108,6 +112,10 @@ class DbJournalCommand extends Command
      */
     protected function execute(InputInterface $input, OutputInterface $output)
     {
+        $outputStyle = new OutputFormatterStyle('white', 'green', ['bold', 'blink']);
+        $output->getFormatter()->setStyle('success', $outputStyle);
+
+        // 1 means the command has ran
         $returnCode = 1;
 
         // main console action
@@ -133,16 +141,29 @@ class DbJournalCommand extends Command
             switch ($action) {
 
                 case 'list':
+
                     foreach (self::$commands as $command => $description) {
                         $output->writeln("{$command}\t\t\t{$description}");
                     }
                     $repoUrl = DbJournalService::REPO_URL;
                     $output->writeln(PHP_EOL . "<href={$repoUrl}>Github\t\t\t{$repoUrl}</>");
+
                     break;
 
                 case 'time':
+
                     $output->writeln($service->time());
+
                     break;
+
+                case 'clean':
+
+                    $helper = $this->getHelper('question');
+                    $question = new ConfirmationQuestion('Are you sure you want to truncate the journal table? ', false);
+
+                    if (!$helper->ask($input, $output, $question)) {
+                        return;
+                    }
 
                 default:
                     $service->$action($options);
@@ -152,11 +173,9 @@ class DbJournalCommand extends Command
 
         }
         catch (DbJournalConfigException $e) {
-            // @TODO: differentiate these functional error messages
             $output->writeln('<error>' . $e->getMessage() . '</error>');
         }
         catch (\Exception $e) {
-            // @TODO: differentiate these functional error messages
             $output->writeln('<error>ERROR: ' . $e->getMessage() . '</error>');
         }
 

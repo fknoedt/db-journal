@@ -195,13 +195,14 @@ class DbJournalService
             $this->conn->exec($query);
         }
 
-        $this->output("Table {$this->internalTable} created");
+        $this->output("<success>Table {$this->internalTable} created</success>");
     }
 
 
     /**
      * Return the current DB Platform which extends AbstractPlatform
      * @return AbstractPlatform
+     * @throws \Doctrine\DBAL\DBALException
      */
     public function getPlatform(): AbstractPlatform
     {
@@ -210,6 +211,7 @@ class DbJournalService
 
     /**
      * Return the current datetime (CURRENT_TIMESTAMP)
+     * @throws \Doctrine\DBAL\DBALException
      * @return mixed
      */
     public function getDbCurrentTimestampSQL()
@@ -241,6 +243,7 @@ class DbJournalService
 
     /**
      * Return the current database time
+     * @throws \Doctrine\DBAL\DBALException
      * @return mixed
      */
     public function time()
@@ -252,6 +255,7 @@ class DbJournalService
 
     /**
      * Ensure that every table journal will be updated to the current database timestamp
+     * @throws \Doctrine\DBAL\DBALException
      * @param array $options
      * @throws DbJournalConfigException
      */
@@ -271,19 +275,28 @@ class DbJournalService
 
         $this->output("Start time: {$startTime}", OutputInterface::VERBOSITY_VERBOSE);
 
+        // option to create files separately
+        // $separatedFiles = $options['separate-files'] ?? false;
+        // $filterTable should work better
+
         foreach ($journals as $journal) {
             $this->generateTableJournal($journal['table_name'], ($forcedLastJournal ? $forcedLastJournal : $journal['last_journal']));
         }
 
-        // save journal file(s) at once then create record
-        $forcedLastJournal
+        $this->output("<success>Update finished</success>");
     }
 
+    /**
+     * Update the Journal (file) with the
+     * @param $table
+     * @param $lastJournal
+     * @throws \Doctrine\DBAL\DBALException
+     */
     public function generateTableJournal($table, $lastJournal)
     {
         $startTime = microtime(true);
 
-        $this->output("Journaling {$table} - last journal: {$lastJournal}");
+        $this->output("<info>Journaling table `{$table}` - last journal: {$lastJournal}</info>");
 
         if (DbalService::tableHasColumn($table, $this->createdAtColumnName)) {
             // nice to have: Iterator
@@ -308,11 +321,19 @@ class DbJournalService
 
         $this->conn->update($this->internalTable, ['last_journal' => $lastJournal, 'last_execution_time_miliseconds' => $executionTime], ['table_name' => $table]);
 
+        $this->output("<info>Journal updated for table `{$table}`</info>");
+
+    }
+
+    public function updateJournalFile()
+    {
+
     }
 
     /**
      * Create the initial records on the main journal table
      * @param null $options
+     * @throws \Doctrine\DBAL\DBALException
      * @throws DbJournalConfigException
      */
     public function init($options): void
@@ -340,7 +361,7 @@ class DbJournalService
         // populate the journal with each able table starting from the timestamp
         $count = $this->populateDatabase($startTime);
 
-        $this->output("{$count} table(s) populated. Here we go.");
+        $this->output("<success>{$count} table(s) populated. Here we go.</success>");
     }
 
     /**
@@ -368,6 +389,7 @@ class DbJournalService
 
     /**
      * Create a record on the journal for each $this->tables
+     * @throws \Doctrine\DBAL\DBALException
      * @param $startTime
      * @return int
      */
@@ -391,6 +413,33 @@ class DbJournalService
         }
 
         return $count;
+    }
+
+    /**
+     * Truncate the main journal table
+     * @return int
+     * @throws \Doctrine\DBAL\DBALException
+     * @throws \Doctrine\DBAL\Exception\InvalidArgumentException
+     */
+    public function truncateJournalTable()
+    {
+        return $this->conn->delete($this->internalTable, ['1' => '1']);
+    }
+
+    public function clean(): void
+    {
+        $this->truncateJournalTable();
+        $this->output("<success>Table {$this->internalTable} truncated</success>");
+    }
+
+    /**
+     * Drop the journal table and
+     */
+    public function uninstall(): void
+    {
+        $this->output("Table {$this->internalTable} deleted");
+
+        $this->output("Journal files deleted");
     }
 
 

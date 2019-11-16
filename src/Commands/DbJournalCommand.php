@@ -138,6 +138,9 @@ class DbJournalCommand extends Command
             // sanitize options
             $options = $this->sanitizeOptions($input, $output);
 
+            // should call the Service's action
+            $callAction = true;
+
             switch ($action) {
 
                 case 'list':
@@ -148,11 +151,15 @@ class DbJournalCommand extends Command
                     $repoUrl = DbJournalService::REPO_URL;
                     $output->writeln(PHP_EOL . "<href={$repoUrl}>Github\t\t\t{$repoUrl}</>");
 
+                    $callAction = false;
+
                     break;
 
                 case 'time':
 
                     $output->writeln($service->time());
+
+                    $callAction = false;
 
                     break;
 
@@ -160,15 +167,57 @@ class DbJournalCommand extends Command
 
                     $helper = $this->getHelper('question');
                     $question = new ConfirmationQuestion('Are you sure you want to truncate the journal table? ', false);
-
                     if (!$helper->ask($input, $output, $question)) {
                         return;
                     }
 
-                default:
-                    $service->$action($options);
                     break;
 
+                case 'update':
+
+                    // update with a fixed time can easily mess up your journal - watch out
+                    if (isset($options['time']) && $options['time']) {
+                        $helper = $this->getHelper('question');
+                        $question = new ConfirmationQuestion("WARNING: This will generate journals for operations between the table's last_journal and the optional datetime." . PHP_EOL .
+                            "Are you sure you want to run `update` for the optional ({$options['time']}) time?", false);
+                        if (!$helper->ask($input, $output, $question)) {
+                            return;
+                        }
+                        else {
+                            $output->writeln('DO IT');
+                            return;
+                        }
+                    }
+
+                    break;
+
+                case 'init':
+
+                    // update with a fixed time can easily mess up your journal - watch out
+                    if (isset($options['time']) && $options['time']) {
+                        $helper = $this->getHelper('question');
+                        $question = new ConfirmationQuestion("This will start your journals for every (able) table starting on the optional date." . PHP_EOL .
+                            "Are you sure you want to initialize the Journal starting on {$options['time']}?", false);
+                        if (!$helper->ask($input, $output, $question)) {
+                            return;
+                        }
+                        else {
+                            $output->writeln('DO IT');
+                            return;
+                        }
+                    }
+
+                    break;
+
+                default:
+
+                    break;
+
+            }
+
+            // some actions don't call a Service method
+            if ($callAction) {
+                $service->$action($options);
             }
 
         }

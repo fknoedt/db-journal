@@ -3,9 +3,12 @@
 namespace DbJournal\Services;
 
 use DbJournal\Exceptions\DbJournalConfigException;
+use DbJournal\Exceptions\DbJournalOutputException;
+use DbJournal\Exceptions\DbJournalRuntimeException;
 use Doctrine\DBAL\Platforms\AbstractPlatform;
 use Doctrine\DBAL\Schema\Schema;
 use PHPUnit\Framework\MockObject\Exception;
+use Symfony\Component\Console\Helper\ProgressBar;
 use Symfony\Component\Console\Output\OutputInterface;
 
 class DbJournalService
@@ -34,6 +37,12 @@ class DbJournalService
      * @var \Symfony\Component\Console\Output\OutputInterface
      */
     protected $outputInterface;
+
+    /**
+     * single instance of a ProgressBar
+     * @var \Symfony\Component\Console\Helper\ProgressBar
+     */
+    protected $progressBar;
 
     /**
      * Main journal table
@@ -117,19 +126,6 @@ class DbJournalService
     }
 
     /**
-     * Write a $msg to the OutputInterface
-     * @param $msg
-     * @param $verboseLevel -- OutputInterface::VERBOSITY_*
-     * @param bool $linebreak -- break lines?
-     */
-    public function output($msg, $verboseLevel=OutputInterface::VERBOSITY_NORMAL, $linebreak=true): void
-    {
-        if ($this->outputInterface) {
-            $this->outputInterface->write($msg, $linebreak, $verboseLevel);
-        }
-    }
-
-    /**
      * Load and set properties for .env confs
      * @throws DbJournalConfigException
      */
@@ -162,42 +158,6 @@ class DbJournalService
             $this->tables = [];
         }
     }
-
-    /**
-     * Create the internal table required to run the journal
-     * @throws DbJournalConfigException
-     * @throws \Doctrine\DBAL\DBALException
-     */
-    public function setup(): void
-    {
-        if (DbalService::tableExists($this->internalTable)) {
-            throw new DbJournalConfigException("Internal table was already created (setup)");
-        }
-
-        $schema = new Schema();
-
-        $table = $schema->createTable($this->internalTable);
-        $table->setComment('Each table being monitored will have an entry on this table');
-
-        $table->addColumn("table_name", "string", ["length" => 256]);
-        $table->setPrimaryKey(array("table_name"));
-
-        $table->addColumn("last_journal", "datetime", ["default" => 'CURRENT_TIMESTAMP']);
-
-        $table->addColumn("last_execution_time_miliseconds", "float", ["notnull" => false]);
-
-        // generate DDL for the table
-        $queries = $schema->toSql($this->getPlatform());
-
-        // and run it
-        foreach ($queries as $query) {
-            $this->output($query, OutputInterface::VERBOSITY_VERBOSE);
-            $this->conn->exec($query);
-        }
-
-        $this->output("<success>Table {$this->internalTable} created</success>");
-    }
-
 
     /**
      * Return the current DB Platform which extends AbstractPlatform
@@ -254,80 +214,73 @@ class DbJournalService
     }
 
     /**
-     * Ensure that every table journal will be updated to the current database timestamp
+     * Truncate the main journal table
+     * @return int
      * @throws \Doctrine\DBAL\DBALException
-     * @param array $options
-     * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\Exception\InvalidArgumentException
      */
-    public function update(array $options): void
+    public function truncateJournalTable()
     {
-        $journals = $this->getLastJournals();
-
-        if (empty($journals)) {
-            throw new DbJournalConfigException("DbJournal table ({$this->internalTable}) is empty. Run `init`.");
-        }
-
-        $startTime = $this->time();
-
-        // @TODO if $options['time']: prompt WILL DELETE THE CURRENT JOURNAL!
-
-        $forcedLastJournal = $options['time'] ?? null;
-
-        $this->output("Start time: {$startTime}", OutputInterface::VERBOSITY_VERBOSE);
-
-        // option to create files separately
-        // $separatedFiles = $options['separate-files'] ?? false;
-        // $filterTable should work better
-
-        foreach ($journals as $journal) {
-            $this->generateTableJournal($journal['table_name'], ($forcedLastJournal ? $forcedLastJournal : $journal['last_journal']));
-        }
-
-        $this->output("<success>Update finished</success>");
+        return $this->conn->delete($this->internalTable, ['1' => '1']);
     }
 
     /**
-     * Update the Journal (file) with the
-     * @param $table
-     * @param $lastJournal
-     * @throws \Doctrine\DBAL\DBALException
+     * List and return the tables that have one or both created/updated_at fields
+     * @return array
      */
-    public function generateTableJournal($table, $lastJournal)
+    public function retrieveAbleTables(): array
     {
-        $startTime = microtime(true);
+        $tables = [];
 
-        $this->output("<info>Journaling table `{$table}` - last journal: {$lastJournal}</info>");
+        // iterate on every table
+        foreach (DbalService::getTablesColumnsMap() as $table => $columns) {
 
-        if (DbalService::tableHasColumn($table, $this->createdAtColumnName)) {
-            // nice to have: Iterator
-            $inserts = $this->conn->fetchAll("SELECT * FROM {$table} WHERE {$this->createdAtColumnName} > ?", [$lastJournal]);
-
-            $totalInserts = count($inserts);
-
-            $this->output("{$totalInserts} insert statements to run", OutputInterface::VERBOSITY_VERBOSE);
-        }
-
-        if (DbalService::tableHasColumn($table, $this->updatedAtColumnName)) {
-
-            $updates = $this->conn->fetchAll("SELECT * FROM {$table} WHERE {$this->updatedAtColumnName} > ?", [$lastJournal]);
-
-            $totalUpdates = count($updates);
-
-            $this->output("{$totalUpdates} update statements to run", OutputInterface::VERBOSITY_VERBOSE);
+            foreach ($columns as $columnName => $column) {
+                // if the table has one or both columns,
+                if (in_array($columnName, [$this->createdAtColumnName, $this->updatedAtColumnName])) {
+                    $tables[] = $table;
+                    break;
+                }
+            }
 
         }
 
-        $executionTime = microtime(true) - $startTime;
-
-        $this->conn->update($this->internalTable, ['last_journal' => $lastJournal, 'last_execution_time_miliseconds' => $executionTime], ['table_name' => $table]);
-
-        $this->output("<info>Journal updated for table `{$table}`</info>");
-
+        return $tables;
     }
 
-    public function updateJournalFile()
+    /**
+     * Create the internal table required to run the journal
+     * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\DBALException
+     */
+    public function setup(): void
     {
+        if (DbalService::tableExists($this->internalTable)) {
+            throw new DbJournalConfigException("Internal table was already created (setup)");
+        }
 
+        $schema = new Schema();
+
+        $table = $schema->createTable($this->internalTable);
+        $table->setComment('Each table being monitored will have an entry on this table');
+
+        $table->addColumn("table_name", "string", ["length" => 256]);
+        $table->setPrimaryKey(array("table_name"));
+
+        $table->addColumn("last_journal", "datetime", ["default" => 'CURRENT_TIMESTAMP']);
+
+        $table->addColumn("last_execution_time_miliseconds", "float", ["notnull" => false]);
+
+        // generate DDL for the table
+        $queries = $schema->toSql($this->getPlatform());
+
+        // and run it
+        foreach ($queries as $query) {
+            $this->output($query, OutputInterface::VERBOSITY_VERBOSE);
+            $this->conn->exec($query);
+        }
+
+        $this->output("<success>Table {$this->internalTable} created</success>");
     }
 
     /**
@@ -353,38 +306,183 @@ class DbJournalService
 
         $startTime = $options['time'] ?? $this->time();
 
-        if (!$startTime) {
-            $startTime = $this->time();
-            $this->output("Start time: {$startTime}", OutputInterface::VERBOSITY_VERBOSE);
-        }
+        $this->output("<info>Journal time: {$startTime} (next `update` will generate journals for operations between this datetime and the execution time)</info>");
 
         // populate the journal with each able table starting from the timestamp
         $count = $this->populateDatabase($startTime);
 
-        $this->output("<success>{$count} table(s) populated. Here we go.</success>");
+        $this->output("<success>{$count} table(s) populated" . ($count > 0 ? ". Here we go." : "") . "</success>");
     }
 
     /**
-     * List and return the tables that have one or both created/updated_at fields
-     * @return array
+     * Ensure that every table journal will be updated to the current database timestamp
+     * @throws \Doctrine\DBAL\DBALException
+     * @param array $options
+     * @throws DbJournalConfigException
      */
-    public function retrieveAbleTables(): array
+    public function update(array $options): void
     {
-        $tables = [];
+        $journals = $this->getLastJournals();
 
-        // iterate on every table
-        foreach (DbalService::getTablesColumnsMap() as $table => $columns) {
+        if (empty($journals)) {
+            throw new DbJournalConfigException("DbJournal table ({$this->internalTable}) is empty. Run `init`.");
+        }
 
-            foreach ($columns as $columnName => $column) {
-                // if the table has one or both columns,
-                if (in_array($columnName, [$this->createdAtColumnName, $this->updatedAtColumnName])) {
-                    $tables[] = $table;
-                    break;
-                }
+        $startTime = $this->time();
+
+        // @TODO if $options['time']: prompt WILL DELETE THE CURRENT JOURNAL!
+
+        $currentTimeOption = $options['time'] ?? null;
+
+        if ($currentTimeOption) {
+            $this->output("Current Datetime Option: {$currentTimeOption} | journals will be generated if the operation was before this datetime (instead of current_timestamp)");
+        }
+        else {
+            $this->output("Start (database) time: {$startTime}");
+        }
+
+        // @TODO: table filtering
+        // $separatedFiles = $options['separate-files'] ?? false;
+        // $filterTable should work better
+
+        foreach ($journals as $journal) {
+            $this->journalTable($journal, $currentTimeOption);
+        }
+
+        $this->output("<success>Update finished</success>");
+    }
+
+    /**
+     * Update the Journal (file) for the given table / time
+     * @param $journal -- main journal table's record
+     * @param $currentTimeOption
+     * @throws \Doctrine\DBAL\DBALException
+     */
+    public function journalTable($journal, $currentTimeOption=false)
+    {
+        $appStartTime = microtime(true);
+
+        // table's journal
+        $tableSql = [];
+
+        $table = $journal['table_name'];
+        $lastJournal = $journal['last_journal'];
+
+        // optional time will overwrite the default (database now())
+        $currentTime = $currentTimeOption ? $currentTimeOption : $this->time();
+
+        $this->output("<info>Journaling table `{$table}` between {$lastJournal} (last journal) and {$currentTime} (currrent time)</info>");
+
+        // created_at: generate insert queries
+        if (DbalService::tableHasColumn($table, $this->createdAtColumnName)) {
+            // nice to have: Iterator
+            $inserts = $this->conn->fetchAll(
+                "SELECT * FROM {$table}
+                WHERE {$this->createdAtColumnName} > ?
+                &&
+                {$this->createdAtColumnName} <= ?",
+                [$lastJournal, $currentTime]
+            );
+
+            // which SQL Statement will be generated
+            $operation = 'insert';
+
+            $totalInserts = count($inserts);
+
+            $this->output("{$totalInserts} insert statements to run", OutputInterface::VERBOSITY_VERBOSE);
+            $this->newProgressBar($totalInserts);
+
+            foreach ($inserts as $insertRow) {
+                $rowSql = $this->rowToJournal($table, $insertRow, $operation, $lastJournal, $currentTime);
+                $tableSql[] = $rowSql;
+                $this->advanceProgressBar();
+                $this->output(PHP_EOL . $rowSql, OutputInterface::VERBOSITY_VERY_VERBOSE);
             }
 
+            $this->finishProgressBar();
         }
-        return $tables;
+
+        // updated_at: generate update queries
+        if (DbalService::tableHasColumn($table, $this->updatedAtColumnName)) {
+            // retrieve all the updates avoiding rows that generated inserts
+            $updates = $this->conn->fetchAll(
+                "SELECT * FROM {$table}
+                WHERE {$this->updatedAtColumnName} > ?
+                &&
+                {$this->updatedAtColumnName} <= ?
+                AND
+                (
+                    -- if both columns are equal (probably updated_at was set upon insert) it was already handled in the inserts section
+                    {$this->updatedAtColumnName} <> {$this->createdAtColumnName}
+                    OR
+                    -- let's get this guy if created_at was not set
+                    {$this->createdAtColumnName} IS NULL
+                );",
+                [$lastJournal, $currentTime]
+            );
+
+            // which SQL Statement will be generated
+            $operation = 'update';
+
+            $totalUpdates = count($updates);
+
+            $this->output("{$totalUpdates} update statements to run", OutputInterface::VERBOSITY_VERBOSE);
+            $this->newProgressBar($totalUpdates);
+
+            foreach ($updates as $updateRow) {
+                $rowSql = $this->rowToJournal($table, $updateRow, $operation, $lastJournal, $currentTime);
+                $tableSql[] = $rowSql;
+                $this->advanceProgressBar();
+                $this->output(PHP_EOL . $rowSql, OutputInterface::VERBOSITY_VERY_VERBOSE);
+            }
+
+            $this->finishProgressBar();
+
+        }
+
+        $executionTime = microtime(true) - $appStartTime;
+
+        // @TODO: BEGIN TRANSACTION / UPDATE / APPEND TO JOURNAL FILE / COMMIT (per table)
+
+        $this->conn->update($this->internalTable, ['last_journal' => $lastJournal, 'last_execution_time_miliseconds' => $executionTime], ['table_name' => $table]);
+
+        $this->output("<info>Journal updated for table `{$table}`</info>");
+        $this->output("<info>Execution time: {$executionTime}</info>", OutputInterface::VERBOSITY_VERBOSE);
+
+    }
+
+    /**
+     * @param $table
+     * @param $row
+     * @param $operation
+     * @param $minTimestamp
+     * @param $maxTimestamp
+     * @return string -- INSERT or UPDATE SQL
+     * @throws DbJournalRuntimeException
+     */
+    public function rowToJournal($table, $row, $operation, $minTimestamp, $maxTimestamp): string
+    {
+        // get the operation's column name
+        $baseColumn = $operation == 'update' ? $this->updatedAtColumnName : $this->createdAtColumnName;
+
+        // this method should only be called to rows pre-filtered (baseColumn between min and max timestamp)
+        if ($row[$baseColumn] <= $minTimestamp || $row[$baseColumn] > $maxTimestamp) {
+            throw new DbJournalRuntimeException("Invalid row for table {$table}: " . json_encode($row));
+        }
+
+        if ($operation == 'insert') {
+            $sql = "INSERT INTO {$table} (`" . implode('`,`', array_keys($row)) . "`) VALUES ('" . implode("', '", $row) . ");";
+        }
+        else {
+            $sql = "UPDATE {$table} set col = value WHERE PK = X;";
+        }
+
+        return $sql;
+    }
+
+    public function updateJournalFile()
+    {
+
     }
 
     /**
@@ -416,16 +514,8 @@ class DbJournalService
     }
 
     /**
-     * Truncate the main journal table
-     * @return int
-     * @throws \Doctrine\DBAL\DBALException
-     * @throws \Doctrine\DBAL\Exception\InvalidArgumentException
+     * Truncate the Journal table (restart journal) and archive the old journal file
      */
-    public function truncateJournalTable()
-    {
-        return $this->conn->delete($this->internalTable, ['1' => '1']);
-    }
-
     public function clean(): void
     {
         $this->truncateJournalTable();
@@ -453,4 +543,78 @@ class DbJournalService
         return __METHOD__;
     }
 
+    /**
+     * Write a $msg to the OutputInterface
+     * @param $msg
+     * @param $verboseLevel -- OutputInterface::VERBOSITY_*
+     * @param bool $linebreak -- break lines?
+     */
+    public function output($msg, $verboseLevel=OutputInterface::VERBOSITY_NORMAL, $linebreak=true): void
+    {
+        if ($this->outputInterface) {
+            $this->outputInterface->write($msg, $linebreak, $verboseLevel);
+        }
+    }
+
+    /**
+     * Start a new Progress Bar instance
+     * @param $totalUnits
+     * @throws DbJournalOutputException
+     */
+    public function newProgressBar($totalUnits): void
+    {
+        if ($this->outputInterface) {
+
+            if ($this->progressBar) {
+                throw new DbJournalOutputException("Cannot start a Progress Bar when one is still running");
+            }
+
+            // creates a new progress bar
+            $this->progressBar = new ProgressBar($this->outputInterface, $totalUnits);
+
+            // starts and displays the progress bar
+            $this->progressBar->start();
+
+        }
+    }
+
+    /**
+     * Call ProgressBar->advance()
+     * @param $units
+     * @throws DbJournalOutputException
+     */
+    protected function advanceProgressBar($units=1): void
+    {
+        // when there's no OutputInterface, everything is ignored
+        if ($this->outputInterface) {
+
+            if (!$this->progressBar) {
+                throw new DbJournalOutputException("Cannot advance when there's no Progress Bar started");
+            }
+
+            $this->progressBar->advance($units);
+
+        }
+    }
+
+    /**
+     * Call ProgressBar->finish()
+     * @throws DbJournalOutputException
+     */
+    protected function finishProgressBar(): void
+    {
+        // when there's no OutputInterface, everything is ignored
+        if ($this->outputInterface) {
+
+            if (!$this->progressBar) {
+                throw new DbJournalOutputException("Cannot finish when there's no Progress Bar started");
+            }
+
+            $this->progressBar->finish();
+
+            $this->progressBar = null;
+
+            $this->outputInterface->writeln('');
+        }
+    }
 }

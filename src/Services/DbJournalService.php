@@ -470,8 +470,32 @@ class DbJournalService
             throw new DbJournalRuntimeException("Invalid row for table {$table}: " . json_encode($row));
         }
 
+        $queryBuilder = DbalService::getQueryBuilder();
+        $values = [];
+
         if ($operation == 'insert') {
-            $sql = "INSERT INTO {$table} (`" . implode('`,`', array_keys($row)) . "`) VALUES ('" . implode("', '", $row) . ");";
+            $queryBuilder->insert($table);
+            foreach ($row as $column => $value) {
+                $queryBuilder->setValue($column, ":{$column}");
+
+                /**
+                 * TODO:
+                 * - find PK
+                 * - get column type
+                 * - detect if type requires $this->conn->quotes();
+                 * - see the full query being generated, escaped and quoted
+                 * - if necessary, use https://github.com/twister-php/sql (watchout)
+                 * - add the query meta tags
+                 * - implement update
+                 * - implement file saving
+                 * - implement transaction to have ATOM file + db
+                 * - implement load journal
+                 */
+
+                $values[] = $value;
+            }
+            die($queryBuilder->getSQL());
+            // $sql = "INSERT INTO {$table} (`" . implode('`,`', array_keys($row)) . "`) VALUES ('" . implode("', '", $row) . ");";
         }
         else {
             $sql = "UPDATE {$table} set col = value WHERE PK = X;";
@@ -531,7 +555,6 @@ class DbJournalService
 
         $this->output("Journal files deleted");
     }
-
 
     public function dump()
     {

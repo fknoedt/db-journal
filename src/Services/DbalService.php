@@ -6,6 +6,7 @@ use DbJournal\Exceptions\DbJournalConfigException;
 use \Doctrine\DBAL\Configuration;
 use \Doctrine\DBAL\DriverManager;
 use Doctrine\DBAL\Platforms\AbstractPlatform;
+use Doctrine\DBAL\Query\QueryBuilder;
 use \Doctrine\DBAL\Schema\AbstractSchemaManager;
 use \Doctrine\DBAL\Connection;
 
@@ -111,6 +112,15 @@ class DbalService
     }
 
     /**
+     * Return a new \Doctrine\DBAL\Query\QueryBuilder instance
+     * @return QueryBuilder
+     */
+    public static function getQueryBuilder(): QueryBuilder
+    {
+        return self::getConnection()->createQueryBuilder();
+    }
+
+    /**
      * Query and retrieve all tables from the database
      * @return array
      */
@@ -136,6 +146,21 @@ class DbalService
 
         }
         return self::$tablesColumnsMap;
+    }
+
+    /**
+     * Same as self::getTablesColumnsMap but only the Doctrine Type for each column
+     * @return array
+     */
+    public static function getTablesColumnsType(): array
+    {
+        $map = self::getTablesColumnsMap();
+        foreach ($map as $table => $columns) {
+            foreach ($columns as $columnName => $columnObject) {
+                $map[$table][$columnName] = $columnObject->getType()->getName();
+            }
+        }
+        return $map;
     }
 
     /**

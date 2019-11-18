@@ -3,6 +3,7 @@
 namespace DbJournal\Commands;
 
 use DbJournal\Exceptions\DbJournalConfigException;
+use DbJournal\Exceptions\DbJournalRuntimeException;
 use DbJournal\Services\DbalService;
 use DbJournal\Services\DbJournalService;
 use Symfony\Component\Console\Command\Command;
@@ -46,6 +47,7 @@ class DbJournalCommand extends Command
         'dump' => 'Output the journal queries for the given filters',
         'apply' => '[WARNING] Apply the given Journal to the current database',
         'list' => 'List the available DbJournal commands',
+        'dump-schema' => "Dump the database structure: ['Table' => ['column1' => \$column1Object, 'column2' => \$column2Object, ...], ...]",
         'time' => 'Show the current database time',
         'clean' => "Clean the existing journal records and files (warning, you won't be able to run pre-existing journals after this)",
         'uninstall' => 'Remove DbJournal table and files'
@@ -163,6 +165,14 @@ class DbJournalCommand extends Command
 
                     break;
 
+                case 'dump-schema':
+
+                    dump(DbalService::getTablesColumnsType());
+
+                    $callAction = false;
+
+                    break;
+
                 case 'clean':
 
                     $helper = $this->getHelper('question');
@@ -184,7 +194,7 @@ class DbJournalCommand extends Command
                             return;
                         }
                         else {
-                            $output->writeln('DO IT');
+                            $output->writeln('Implement it with custom `--time` option');
                             return;
                         }
                     }
@@ -202,7 +212,7 @@ class DbJournalCommand extends Command
                             return;
                         }
                         else {
-                            $output->writeln('DO IT');
+                            $output->writeln('Implement it with custom `--time` option');
                             return;
                         }
                     }

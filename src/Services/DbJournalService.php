@@ -481,6 +481,7 @@ class DbJournalService
 
                 /**
                  * TODO:
+                 * - why quote() is not distinguishing integers and non-quote types?
                  * - find PK
                  * - get column type
                  * - detect if type requires $this->conn->quotes();
@@ -495,8 +496,6 @@ class DbJournalService
 
                 //
                 $dbValue = DbalService::getDatabaseValue($value, $table, $column);
-
-                $dbValue = $this->conn->quote($dbValue);
 
                 $this->output("<info>{$dbValue}</info>");
 

@@ -10,6 +10,8 @@ use Doctrine\DBAL\Query\QueryBuilder;
 use \Doctrine\DBAL\Schema\AbstractSchemaManager;
 use \Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Types\DateTimeType;
+use Doctrine\DBAL\Types\IntegerType;
+use Doctrine\DBAL\Types\SmallIntType;
 use Doctrine\DBAL\Types\Type;
 
 class DbalService
@@ -34,10 +36,9 @@ class DbalService
         // Type::overrideType('datetime',);
     }
 
-
     /**
      * Check if every required Database Connection Env Var is set
-     * @throws \DbJournalConfigException
+     * @throws DbJournalConfigException
      */
     public static function validateEnv(): void
     {
@@ -79,6 +80,8 @@ class DbalService
     /**
      * Wrapper for getConnection()->getSchemaManager() *IDE purposes
      * @return AbstractSchemaManager
+     * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\DBALException
      */
     public static function getSchemaManager(): AbstractSchemaManager
     {
@@ -88,6 +91,8 @@ class DbalService
     /**
      * Wrapper for getConnection()->getDatabasePlatform()
      * @return AbstractPlatform
+     * @throws \Doctrine\DBAL\DBALException
+     * @throws DbJournalConfigException
      */
     public static function getPlatform(): AbstractPlatform
     {
@@ -96,7 +101,9 @@ class DbalService
 
     /**
      * Initialize and return a singleton DBAL Connection
-     * @return \Doctrine\DBAL\Connection
+     * @return Connection
+     * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\DBALException
      */
     public static function getConnection(): Connection
     {
@@ -125,6 +132,8 @@ class DbalService
     /**
      * Return a new \Doctrine\DBAL\Query\QueryBuilder instance
      * @return QueryBuilder
+     * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\DBALException
      */
     public static function getQueryBuilder(): QueryBuilder
     {
@@ -134,6 +143,8 @@ class DbalService
     /**
      * Query and retrieve all tables from the database
      * @return array
+     * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\DBALException
      */
     public static function retrieveTables(): array
     {
@@ -145,6 +156,8 @@ class DbalService
      * Columns will be handled as Doctrine\DBAL\Schema\Column
      * @see https://www.doctrine-project.org/api/dbal/2.9/Doctrine/DBAL/Schema/Column.html
      * @return array
+     * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\DBALException
      */
     public static function getTablesColumnsMap(): array
     {
@@ -164,6 +177,8 @@ class DbalService
     /**
      * Return the full self::getTablesColumnsMap but replacing the column's value with the datatype (txt)
      * @return array
+     * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\DBALException
      */
     public static function getTablesColumnsOutput(): array
     {
@@ -181,6 +196,8 @@ class DbalService
      * @param $tableName
      * @param $columnName
      * @return bool
+     * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\DBALException
      */
     public static function tableHasColumn($tableName, $columnName): bool
     {
@@ -192,7 +209,8 @@ class DbalService
      * @param string $table
      * @param string $column
      * @return Type
-     * @throws DbJournalRuntimeException
+     * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\DBALException
      */
     public static function getColumnType(string $table, string $column)
     {
@@ -213,16 +231,37 @@ class DbalService
      * @param string $table
      * @param string $column
      * @return string
-     * @throws DbJournalRuntimeException
+     * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\DBALException
+     * @throws \Doctrine\DBAL\Types\ConversionException
      */
     public static function getDatabaseValue($value, string $table, string $column)
     {
+        if (is_null($value)) {
+            return 'NULL';
+        }
+
         $type = DbalService::getColumnType($table, $column);
+
+        $quotes = true;
 
         if ($type instanceof DateTimeType) {
             $value = new \DateTime($value);
         }
+        elseif ($type instanceof IntegerType || $type instanceof SmallIntType) {
+            $value = (int) $value;
+            $quotes = false;
+        }
+        elseif (is_float($value)) {
+            die ("TODO: implement float values {$value}");
+        }
 
-        return $type->convertToDatabaseValue($value, self::getPlatform());
+        if ($quotes) {
+            $value = self::getConnection()->quote($value, $type);
+        }
+
+        // $value = $type->convertToDatabaseValue($value, self::getPlatform());
+
+        return $value;
     }
 }

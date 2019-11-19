@@ -167,7 +167,7 @@ class DbJournalCommand extends Command
 
                 case 'dump-schema':
 
-                    dump(DbalService::getTablesColumnsMap());
+                    dump(DbalService::getTablesColumnsOutput());
 
                     $callAction = false;
 
@@ -238,7 +238,7 @@ class DbJournalCommand extends Command
         // technical error: check APP_DEBUG
         catch (\Exception $e) {
 
-            if ($_ENV['APP_DEBUG']) {
+            if (isset($_ENV['APP_DEBUG']) && $_ENV['APP_DEBUG']) {
                 $output->writeln([
                     '<error>Error: ' . $e->getMessage() . '</error>',
                     '<error>File / Line: ' . $e->getFile() . ':' . $e->getLine() . '</error>',

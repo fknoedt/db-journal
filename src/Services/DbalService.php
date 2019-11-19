@@ -9,6 +9,8 @@ use Doctrine\DBAL\Platforms\AbstractPlatform;
 use Doctrine\DBAL\Query\QueryBuilder;
 use \Doctrine\DBAL\Schema\AbstractSchemaManager;
 use \Doctrine\DBAL\Connection;
+use Doctrine\DBAL\Types\DateTimeType;
+use Doctrine\DBAL\Types\Type;
 
 class DbalService
 {
@@ -23,6 +25,15 @@ class DbalService
      * @var
      */
     protected static $tablesColumnsMap;
+
+    /**
+     * DbalService constructor.
+     */
+    public function __construct()
+    {
+        // Type::overrideType('datetime',);
+    }
+
 
     /**
      * Check if every required Database Connection Env Var is set
@@ -78,9 +89,9 @@ class DbalService
      * Wrapper for getConnection()->getDatabasePlatform()
      * @return AbstractPlatform
      */
-    public function getPlatform(): AbstractPlatform
+    public static function getPlatform(): AbstractPlatform
     {
-        return $this->getConnection()->getDatabasePlatform();
+        return self::getConnection()->getDatabasePlatform();
     }
 
     /**
@@ -131,6 +142,8 @@ class DbalService
 
     /**
      * [Create a singleton and] return a 'Table' => ['column1' => $column1Object, 'column2' => $column2Object, ...] multidimensional array
+     * Columns will be handled as Doctrine\DBAL\Schema\Column
+     * @see https://www.doctrine-project.org/api/dbal/2.9/Doctrine/DBAL/Schema/Column.html
      * @return array
      */
     public static function getTablesColumnsMap(): array
@@ -149,10 +162,10 @@ class DbalService
     }
 
     /**
-     * Same as self::getTablesColumnsMap but only the Doctrine Type for each column
+     * Return the full self::getTablesColumnsMap but replacing the column's value with the datatype (txt)
      * @return array
      */
-    public static function getTablesColumnsType(): array
+    public static function getTablesColumnsOutput(): array
     {
         $map = self::getTablesColumnsMap();
         foreach ($map as $table => $columns) {
@@ -172,5 +185,44 @@ class DbalService
     public static function tableHasColumn($tableName, $columnName): bool
     {
         return isset(self::getTablesColumnsMap()[$tableName][$columnName]);
+    }
+
+    /**
+     * Return the Doctrine\DBAL\Types\Type of the given $table . $column
+     * @param string $table
+     * @param string $column
+     * @return Type
+     * @throws DbJournalRuntimeException
+     */
+    public static function getColumnType(string $table, string $column)
+    {
+        $tablesMap = self::getTablesColumnsMap();
+
+        if (! isset($tablesMap[$table][$column])) {
+            throw new DbJournalRuntimeException("No entry on TablesColumnsMap | {$table} . {$column}  ");
+        }
+
+        $column = $tablesMap[$table][$column];
+
+        return $column->getType();
+    }
+
+    /**
+     * Return Type->convertToDatabaseValue() (Converts a value from its PHP representation to its database representation of this type)
+     * @param $value
+     * @param string $table
+     * @param string $column
+     * @return string
+     * @throws DbJournalRuntimeException
+     */
+    public static function getDatabaseValue($value, string $table, string $column)
+    {
+        $type = DbalService::getColumnType($table, $column);
+
+        if ($type instanceof DateTimeType) {
+            $value = new \DateTime($value);
+        }
+
+        return $type->convertToDatabaseValue($value, self::getPlatform());
     }
 }

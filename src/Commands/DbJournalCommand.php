@@ -167,7 +167,7 @@ class DbJournalCommand extends Command
 
                 case 'dump-schema':
 
-                    dump(DbalService::getTablesColumnsType());
+                    dump(DbalService::getTablesColumnsMap());
 
                     $callAction = false;
 
@@ -231,11 +231,23 @@ class DbJournalCommand extends Command
             }
 
         }
+        // functional error: show the message to the user
         catch (DbJournalConfigException $e) {
             $output->writeln('<error>' . $e->getMessage() . '</error>');
         }
+        // technical error: check APP_DEBUG
         catch (\Exception $e) {
-            $output->writeln('<error>ERROR: ' . $e->getMessage() . '</error>');
+
+            if ($_ENV['APP_DEBUG']) {
+                $output->writeln([
+                    '<error>Error: ' . $e->getMessage() . '</error>',
+                    '<error>File / Line: ' . $e->getFile() . ':' . $e->getLine() . '</error>',
+                    '<error>Trace: ' . $e->getTraceAsString() . '</error>'
+                ]);
+            }
+            else {
+                $output->writeln('<error>Internal Error</error>'); // @TODO: implement log/report
+            }
         }
 
         $executionTime = microtime(true) - $this::$startTime;

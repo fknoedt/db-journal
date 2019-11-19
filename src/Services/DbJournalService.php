@@ -7,6 +7,7 @@ use DbJournal\Exceptions\DbJournalOutputException;
 use DbJournal\Exceptions\DbJournalRuntimeException;
 use Doctrine\DBAL\Platforms\AbstractPlatform;
 use Doctrine\DBAL\Schema\Schema;
+use Doctrine\DBAL\Types\Type;
 use PHPUnit\Framework\MockObject\Exception;
 use Symfony\Component\Console\Helper\ProgressBar;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -492,10 +493,18 @@ class DbJournalService
                  * - implement load journal
                  */
 
-                $values[] = $value;
+                //
+                $dbValue = DbalService::getDatabaseValue($value, $table, $column);
+
+                $dbValue = $this->conn->quote($dbValue);
+
+                $this->output("<info>{$dbValue}</info>");
+
+                $values[] = $dbValue;
             }
-            die($queryBuilder->getSQL());
-            // $sql = "INSERT INTO {$table} (`" . implode('`,`', array_keys($row)) . "`) VALUES ('" . implode("', '", $row) . ");";
+
+            $sql = "INSERT INTO {$table} (`" . implode('`,`', array_keys($row)) . "`) VALUES (" . implode(", ", $values) .   ");";
+
         }
         else {
             $sql = "UPDATE {$table} set col = value WHERE PK = X;";

@@ -273,10 +273,12 @@ class DbJournalService
 
        if (! directoryExists($dir)) {
            try {
-
+               mkdir($dir, 0777, true);
            }
-           catch()
-           mkdir($dir, 0777, true);
+           catch(\Exception $e) {
+               throw new DbJournalConfigException("Could not create directory {$dir}");
+           }
+
        }
     }
 

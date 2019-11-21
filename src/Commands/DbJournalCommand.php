@@ -46,9 +46,9 @@ class DbJournalCommand extends Command
         'init' => 'Create the initial records on the main journal table',
         'update' => 'Ensure that every table journal will be updated to the current database timestamp',
         'dump' => 'Output the journal queries for the given filters',
-        'apply' => '[WARNING] Apply the given Journal to the current database',
+        'run' => '[WARNING] Apply the given Journal to the current database',
         'list' => 'List the available DbJournal commands',
-        'dump-schema' => "Dump the database structure: ['Table' => ['column1' => \$column1Object, 'column2' => \$column2Object, ...], ...]",
+        'schema' => "Dump the database structure: ['Table' => ['column1' => \$column1Object, 'column2' => \$column2Object, ...], ...]",
         'time' => 'Show the current database time',
         'clean' => "Clean the existing journal records and files (warning, you won't be able to run pre-existing journals after this)",
         'uninstall' => 'Remove DbJournal table and files'
@@ -161,12 +161,18 @@ class DbJournalCommand extends Command
                 case 'time':
 
                     $output->writeln($service->time());
-
                     $callAction = false;
 
                     break;
 
-                case 'dump-schema':
+                case 'dump':
+
+                    $output->writeln($service->dump());
+                    $callAction = false;
+
+                    break;
+
+                case 'schema':
 
                     dump(DbalService::getTablesColumnsOutput());
 
@@ -210,10 +216,6 @@ class DbJournalCommand extends Command
                         $question = new ConfirmationQuestion("This will start your journals for every (able) table starting on the optional date." . PHP_EOL .
                             "Are you sure you want to initialize the Journal starting on {$options['time']}?", false);
                         if (!$helper->ask($input, $output, $question)) {
-                            return;
-                        }
-                        else {
-                            $output->writeln('Implement it with custom `--time` option');
                             return;
                         }
                     }

@@ -9,11 +9,23 @@ use DbJournal\Exceptions\DbJournalUserException;
 use Doctrine\DBAL\Platforms\AbstractPlatform;
 use Doctrine\DBAL\Schema\Schema;
 use Doctrine\DBAL\Types\Type;
-use http\Exception\RuntimeException;
 use PHPUnit\Framework\MockObject\Exception;
 use Symfony\Component\Console\Helper\ProgressBar;
 use Symfony\Component\Console\Output\OutputInterface;
 
+/**
+ * Class DbJournalService
+ * DbJournal Operation Manager
+ *
+ * @TODO:
+ * - queries pattern
+ * - check tivel's
+ * - large database test
+ * - write unit tests
+ * - db_journal_sessions containing the time, log and execution time
+ *
+ * @package DbJournal\Services
+ */
 class DbJournalService
 {
     /**
@@ -34,7 +46,7 @@ class DbJournalService
     /**
      * Default journal file dir
      */
-    const DEFAULT_FILE_DIR = __DIR__ . '../../var/journal';
+    const DEFAULT_FILE_DIR = __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'journal';
 
     /**
      * Defaul journal file name
@@ -136,7 +148,7 @@ class DbJournalService
             throw new DbJournalConfigException("Table `{$this->internalTable}` doesn't exist. Run `setup`.");
         }
 
-        $this->output("{$this->internalTable} table " . ($ignoreTable ? 'ignored' : 'created'), OutputInterface::VERBOSITY_VERBOSE);
+        $this->output("{$this->internalTable} table " . ($ignoreTable ? 'ignored' : 'ok'), OutputInterface::VERBOSITY_VERBOSE);
     }
 
     /**
@@ -194,7 +206,7 @@ class DbJournalService
     }
 
     /**
-     * Return an array of table_name|last_journal|last_execution_time_miliseconds
+     * Return an array of table_name|last_journal|last_execution_time_milliseconds
      * @return array
      */
     public function getLastJournals(): array
@@ -265,33 +277,43 @@ class DbJournalService
     }
 
     /**
-     *
+     * Return the journal file name from the .env conf or the default one
+     * @return string
      */
-    public function checkJournalFileDir()
-    {
-       $dir = $this->getJournalFileDir();
-
-       if (! directoryExists($dir)) {
-           try {
-               mkdir($dir, 0777, true);
-           }
-           catch(\Exception $e) {
-               throw new DbJournalConfigException("Could not create directory {$dir}");
-           }
-
-       }
-    }
-
     public function getJournalFilename(): string
     {
         $filename = $_ENV['DB_JOURNAL_FILE'] ?? self::DEFAULT_FILE_NAME;
         return $this->getJournalFileDir() . DIRECTORY_SEPARATOR . $filename;
     }
 
+    /**
+     * Return the journal file directory from the .env conf or the default one
+     * @return string
+     */
     public function getJournalFileDir(): string
     {
         $dir = $_ENV['DB_JOURNAL_DIR'] ?? self::DEFAULT_FILE_DIR;
         return $dir;
+    }
+
+    /**
+     * Ensure that the journal directory exists
+     * @throws DbJournalConfigException
+     */
+    public function checkJournalFileDir()
+    {
+        $dir = $this->getJournalFileDir();
+
+        if (! is_dir($dir)) {
+            try {
+                mkdir($dir, 0777, true);
+                $this->output("Directory {$dir} created", OutputInterface::VERBOSITY_VERBOSE);
+            }
+            catch(\Exception $e) {
+                throw new DbJournalConfigException("Could not create directory {$dir}");
+            }
+
+        }
     }
 
     /**
@@ -315,7 +337,7 @@ class DbJournalService
 
         $table->addColumn("last_journal", "datetime", ["default" => 'CURRENT_TIMESTAMP']);
 
-        $table->addColumn("last_execution_time_miliseconds", "float", ["notnull" => false]);
+        $table->addColumn("last_execution_time_milliseconds", "float", ["notnull" => false]);
 
         // generate DDL for the table
         $queries = $schema->toSql($this->getPlatform());
@@ -350,14 +372,25 @@ class DbJournalService
 
         }
 
-        $startTime = $options['time'] ?? $this->time();
+        // --time set: create records ensuring the existing records will be updated to the inputted time
+        if (isset($options['time']) && $options['time']) {
+            $startTime = $options['time'];
+            $forceUpdate = true;
+
+            // TODO: backup journal dump file
+
+        }
+        else {
+            $startTime = $this->time();
+            $forceUpdate = true;
+        }
 
         $this->output("<info>Journal time: {$startTime} (next `update` will generate journals for operations between this datetime and the execution time)</info>");
 
         // populate the journal with each able table starting from the timestamp
-        $count = $this->populateDatabase($startTime);
+        $count = $this->populateDatabase($startTime, $forceUpdate);
 
-        $this->output("<success>{$count} table(s) populated" . ($count > 0 ? ". Here we go." : "") . "</success>");
+        $this->output("<success>{$count} table(s) populated/updated" . ($count > 0 ? ". Here we go." : "") . "</success>");
     }
 
     /**
@@ -401,7 +434,7 @@ class DbJournalService
             $this->journalTable($journal, $currentTimeOption);
         }
 
-        $this->output("<success>Update finished</success>");
+        $this->output("<success>Update finished. SQL queries appended to {$this->getJournalFilename()}</success>");
     }
 
     /**
@@ -420,7 +453,7 @@ class DbJournalService
         $journalStartTime = microtime(true);
 
         // table's journal
-        $tableSQL = [];
+        $tableSQLs = [];
 
         $table = $journal['table_name'];
         $lastJournal = $journal['last_journal'];
@@ -445,7 +478,7 @@ class DbJournalService
                 [$lastJournal, $currentTime]
             );
 
-            $rowsToJournal['inserts'] = $inserts;
+            $rowsToJournal['insert'] = $inserts;
         }
 
         // updated_at: generate update queries
@@ -477,28 +510,36 @@ class DbJournalService
 
             $totalRows = count($rows);
 
-            $this->output("{$totalRows} {$operation} statements to run", OutputInterface::VERBOSITY_VERBOSE);
-            $this->newProgressBar($totalRows);
+            $this->output("{$totalRows} {$operation} statements to journal", OutputInterface::VERBOSITY_VERBOSE);
 
-            // one query per iteration
-            foreach ($rows as $row) {
-                $rowSql = $this->rowToSQL($table, $row, $operation, $lastJournal, $currentTime);
-                $tableSQLs[$operation] = $rowSql;
-                $this->advanceProgressBar();
-                $this->output(PHP_EOL . $rowSql, OutputInterface::VERBOSITY_VERY_VERBOSE);
+            if ($totalRows > 0) {
+
+                $this->newProgressBar($totalRows);
+
+                // one query per iteration
+                foreach ($rows as $row) {
+                    $rowSql = $this->rowToSQL($table, $row, $operation, $lastJournal, $currentTime);
+                    $tableSQLs[$operation][] = $rowSql;
+                    $this->advanceProgressBar();
+                    $this->output(PHP_EOL . "<info>{$rowSql}</info>", OutputInterface::VERBOSITY_DEBUG);
+                }
+
+                $this->finishProgressBar();
+
             }
 
-            $this->finishProgressBar();
         }
 
         $executionTime = microtime(true) - $journalStartTime;
 
         // first we update the journal table (we'll commit if the file is written successfully)
-        $this->conn->update($this->internalTable, ['table_name' => $table, 'last_journal' => $lastJournal, 'last_execution_time_miliseconds' => $executionTime], ['table_name' => $table]);
+        $this->conn->update($this->internalTable, ['table_name' => $table, 'last_journal' => $currentTime, 'last_execution_time_milliseconds' => $executionTime], ['table_name' => $table]);
 
         // then we write (append) the SQL queries to the journal file
         // TODO: one file per table option
-        file_put_contents($this->getJournalFilename(), $tableSQL, FILE_APPEND);
+        foreach ($tableSQLs as $operation => $queries) {
+            file_put_contents($this->getJournalFilename(), implode(PHP_EOL, $queries), FILE_APPEND);
+        }
 
         // now we can commit the journal table update
         $this->conn->commit();
@@ -535,12 +576,9 @@ class DbJournalService
         $columnValues = [];
 
         foreach ($row as $column => $value) {
-
             // get SQL syntax string for the $value according to it's Type
             $dbValue = DbalService::getDatabaseValue($value, $table, $column);
-
             $columnValues[$column] = $dbValue;
-
         }
 
         if ($operation == 'insert') {
@@ -567,36 +605,26 @@ class DbJournalService
             $wherePk = [];
 
             foreach ($tablePKs as $pkColumnName) {
-
                 // get the PK's value
                 $value = $columnValues[$pkColumnName];
-
                 $wherePk[] = "`{$pkColumnName}` = " . $value;
-
             }
 
             $sql = "UPDATE {$table} set " . implode(', ', $set) . " WHERE " . implode('AND ', $wherePk) . ";";
 
         }
 
-        $this->output(PHP_EOL . "<info>{$sql}</info>", OutputInterface::VERBOSITY_DEBUG);
-
         return $sql;
-    }
-
-
-    public function updateJournalFile()
-    {
-
     }
 
     /**
      * Create a record on the journal for each $this->tables
      * @throws \Doctrine\DBAL\DBALException
      * @param $startTime
+     * @param $forceUpdate
      * @return int
      */
-    public function populateDatabase($startTime): int
+    public function populateDatabase($startTime, $forceUpdate): int
     {
         $count = 0;
 
@@ -607,12 +635,23 @@ class DbJournalService
         foreach ($this->tables as $table) {
 
             if (in_array($table, $journalTables)) {
-                $this->output("<info>Table {$table} was already in the Journal</info>", OutputInterface::VERBOSITY_VERBOSE);
+
+                if ($forceUpdate) {
+                    $this->conn->update($this->internalTable, ['last_journal' => $startTime, 'last_execution_time_milliseconds' => null], ['table_name' => $table]);
+                    $operation = 'updated';
+                    $count++;
+                }
+                else {
+                    $this->output("<info>Table {$table} was already in the Journal</info>", OutputInterface::VERBOSITY_VERBOSE);
+                }
             }
             else {
                 $this->conn->insert($this->internalTable, ['table_name' => $table, 'last_journal' => $startTime]);
+                $operation = 'created';
                 $count++;
             }
+
+            $this->output("Journal: table {$table} entry {$operation}", OutputInterface::VERBOSITY_VERBOSE);
         }
 
         return $count;
@@ -637,14 +676,23 @@ class DbJournalService
         $this->output("Journal files deleted");
     }
 
+    /**
+     * Dump the journal file filtering by time
+     * @TODO: filter by min & max timestamps
+     * @return string
+     */
     public function dump()
     {
-        return __METHOD__;
+        return file_get_contents($this->getJournalFilename());
     }
 
-    public function apply()
+    /**
+     * Run the journal queries from the /var/import/* dir to the current database
+     * @return string
+     */
+    public function run()
     {
-        return __METHOD__;
+        return "TODO: run the journal queries from a /var/import dir to the current database";
     }
 
     /**

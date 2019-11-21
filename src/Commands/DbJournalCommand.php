@@ -4,6 +4,7 @@ namespace DbJournal\Commands;
 
 use DbJournal\Exceptions\DbJournalConfigException;
 use DbJournal\Exceptions\DbJournalRuntimeException;
+use DbJournal\Exceptions\DbJournalUserException;
 use DbJournal\Services\DbalService;
 use DbJournal\Services\DbJournalService;
 use Symfony\Component\Console\Command\Command;
@@ -234,6 +235,9 @@ class DbJournalCommand extends Command
         // functional error: show the message to the user
         catch (DbJournalConfigException $e) {
             $output->writeln('<error>' . $e->getMessage() . '</error>');
+        }
+        catch (DbJournalUserException $e) {
+            $output->writeln('<db-error>' . $e->getMessage() . '</db-error>');
         }
         // technical error: check APP_DEBUG
         catch (\Exception $e) {

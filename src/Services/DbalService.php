@@ -3,8 +3,10 @@
 namespace DbJournal\Services;
 
 use DbJournal\Exceptions\DbJournalConfigException;
+use DbJournal\Exceptions\DbJournalRuntimeException;
 use \Doctrine\DBAL\Configuration;
 use \Doctrine\DBAL\DriverManager;
+use Doctrine\DBAL\ParameterType;
 use Doctrine\DBAL\Platforms\AbstractPlatform;
 use Doctrine\DBAL\Query\QueryBuilder;
 use \Doctrine\DBAL\Schema\AbstractSchemaManager;
@@ -13,7 +15,13 @@ use Doctrine\DBAL\Types\DateTimeType;
 use Doctrine\DBAL\Types\IntegerType;
 use Doctrine\DBAL\Types\SmallIntType;
 use Doctrine\DBAL\Types\Type;
+use Doctrine\DBAL\Schema\Table;
 
+/**
+ * Class DbalService
+ * DBAL Wrapper for generic database operations
+ * @package DbJournal\Services
+ */
 class DbalService
 {
     /**
@@ -23,18 +31,16 @@ class DbalService
     protected static $conn;
 
     /**
+     * Cache for all SchemaManager Tables
+     * @var array Table
+     */
+    protected static $schemaManagerTables;
+
+    /**
      * Multidimensional array: table => [[column1], [column2]...]
      * @var
      */
     protected static $tablesColumnsMap;
-
-    /**
-     * DbalService constructor.
-     */
-    public function __construct()
-    {
-        // Type::overrideType('datetime',);
-    }
 
     /**
      * Check if every required Database Connection Env Var is set
@@ -70,7 +76,9 @@ class DbalService
     /**
      * Wrapper for self::getSchemaManager()->tablesExist()
      * @param string $table
-     * @return bool;
+     * @return bool
+     * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\DBALException
      */
     public static function tableExists(string $table): bool
     {
@@ -141,14 +149,19 @@ class DbalService
     }
 
     /**
-     * Query and retrieve all tables from the database
+     * Query and retrieve all tables from the database (with cache/singleton)
      * @return array
      * @throws DbJournalConfigException
      * @throws \Doctrine\DBAL\DBALException
      */
     public static function retrieveTables(): array
     {
-        return self::getSchemaManager()->listTables();
+        // initialize singleton
+        if (! isset(self::$schemaManagerTables)) {
+            self::$schemaManagerTables = self::getSchemaManager()->listTables();
+        }
+
+        return self::$schemaManagerTables;
     }
 
     /**
@@ -165,6 +178,7 @@ class DbalService
         if (! isset(self::$tablesColumnsMap)) {
 
             foreach (self::retrieveTables() as $table) {
+
                 foreach ($table->getColumns() as $column) {
                     self::$tablesColumnsMap[$table->getName()][$column->getName()] = $column;
                 }
@@ -205,14 +219,38 @@ class DbalService
     }
 
     /**
+     * Get the SchemaManager Table object for the given table
+     * @TODO: Table hashmap to improve performace
+     * @param $tableName
+     * @return Table
+     * @throws DbJournalConfigException
+     * @throws DbJournalRuntimeException
+     * @throws \Doctrine\DBAL\DBALException
+     */
+    public static function getTable($tableName): Table
+    {
+        // retrieveTables() is cached
+        foreach (self::retrieveTables() as $table) {
+
+            if ($table->getName() == $tableName) {
+                return $table;
+            }
+
+        }
+
+        throw new DbJournalRuntimeException("Table {$tableName} not found");
+    }
+
+    /**
      * Return the Doctrine\DBAL\Types\Type of the given $table . $column
      * @param string $table
      * @param string $column
      * @return Type
      * @throws DbJournalConfigException
+     * @throws DbJournalRuntimeException
      * @throws \Doctrine\DBAL\DBALException
      */
-    public static function getColumnType(string $table, string $column)
+    public static function getColumnType(string $table, string $column): Type
     {
         $tablesMap = self::getTablesColumnsMap();
 
@@ -226,6 +264,33 @@ class DbalService
     }
 
     /**
+     * @param $tableName
+     * @return array
+     * @throws DbJournalConfigException
+     * @throws DbJournalRuntimeException
+     * @throws \Doctrine\DBAL\DBALException
+     */
+    public static function getTablePrimaryKeys($tableName): array
+    {
+        $table = self::getTable($tableName);
+        return $table->getPrimaryKey()->getUnquotedColumns();
+    }
+
+    /**
+     * Is the given table . column a primary key?
+     * @param string $table
+     * @param string $column
+     * @return bool
+     * @throws DbJournalConfigException
+     * @throws DbJournalRuntimeException
+     * @throws \Doctrine\DBAL\DBALException
+     */
+    public static function isColumnPk(string $table, string $column): bool
+    {
+        return in_array($column, self::getTablePrimaryKeys($table));
+    }
+
+    /**
      * Return Type->convertToDatabaseValue() (Converts a value from its PHP representation to its database representation of this type)
      * @param $value
      * @param string $table
@@ -233,35 +298,52 @@ class DbalService
      * @return string
      * @throws DbJournalConfigException
      * @throws \Doctrine\DBAL\DBALException
+     * @throws DbJournalRuntimeException
      * @throws \Doctrine\DBAL\Types\ConversionException
      */
-    public static function getDatabaseValue($value, string $table, string $column)
+    public static function getDatabaseValue($value, string $table, string $column): string
     {
         if (is_null($value)) {
             return 'NULL';
         }
 
+        // get the value's Type object
         $type = DbalService::getColumnType($table, $column);
 
-        $quotes = true;
+        // cast to the PHP value according to the Type
+        $value = $type->convertToPHPValue($value, self::getPlatform());
 
-        if ($type instanceof DateTimeType) {
-            $value = new \DateTime($value);
-        }
-        elseif ($type instanceof IntegerType || $type instanceof SmallIntType) {
-            $value = (int) $value;
-            $quotes = false;
-        }
-        elseif (is_float($value)) {
-            die ("TODO: implement float values {$value}");
-        }
-
-        if ($quotes) {
+        if (self::shouldQuote($type->getBindingType())) {
             $value = self::getConnection()->quote($value, $type);
         }
 
         // $value = $type->convertToDatabaseValue($value, self::getPlatform());
 
         return $value;
+    }
+
+    /**
+     * Does the given binding type require quotes or not
+     * @param $bindingType
+     * @return bool
+     * @throws \Exception
+     */
+    public static function shouldQuote($bindingType): bool
+    {
+        switch ($bindingType) {
+
+            case ParameterType::INTEGER:
+            case ParameterType::BOOLEAN:
+            case ParameterType::NULL:
+                return false;
+
+            case ParameterType::STRING:
+                return true;
+
+            case ParameterType::BINARY:
+            case ParameterType::LARGE_OBJECT:
+                throw new \Exception("Binary/LOB types are not implemented");
+
+        }
     }
 }

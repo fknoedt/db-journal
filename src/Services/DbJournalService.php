@@ -5,9 +5,11 @@ namespace DbJournal\Services;
 use DbJournal\Exceptions\DbJournalConfigException;
 use DbJournal\Exceptions\DbJournalOutputException;
 use DbJournal\Exceptions\DbJournalRuntimeException;
+use DbJournal\Exceptions\DbJournalUserException;
 use Doctrine\DBAL\Platforms\AbstractPlatform;
 use Doctrine\DBAL\Schema\Schema;
 use Doctrine\DBAL\Types\Type;
+use http\Exception\RuntimeException;
 use PHPUnit\Framework\MockObject\Exception;
 use Symfony\Component\Console\Helper\ProgressBar;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -27,7 +29,17 @@ class DbJournalService
     /**
      * Composer user/package name
      */
-    const COMPOSER_PACKAGE = 'https://github.com/fknoedt/db-journal';
+    const COMPOSER_PACKAGE = 'fknoedt/db-journal';
+
+    /**
+     * Default journal file dir
+     */
+    const DEFAULT_FILE_DIR = __DIR__ . '../../var/journal';
+
+    /**
+     * Defaul journal file name
+     */
+    const DEFAULT_FILE_NAME = 'journal.dump';
 
     /**
      * @var \Doctrine\DBAL\Connection
@@ -91,9 +103,10 @@ class DbJournalService
      * DbJournalService constructor.
      * This class is tight coupled with doctrine/dbal so no DI for the DB Connection
      * For testing, the database can be mocked with a .env.test file
-     * @param $output -- OutputInterface
-     * @param $ignoreTable -- do not check if the main db table exists
+     * @param OutputInterface|null $output
+     * @param bool $ignoreTable
      * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\DBALException
      */
     public function __construct(OutputInterface $output=null, $ignoreTable = false)
     {
@@ -228,6 +241,8 @@ class DbJournalService
     /**
      * List and return the tables that have one or both created/updated_at fields
      * @return array
+     * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\DBALException
      */
     public function retrieveAbleTables(): array
     {
@@ -247,6 +262,34 @@ class DbJournalService
         }
 
         return $tables;
+    }
+
+    /**
+     *
+     */
+    public function checkJournalFileDir()
+    {
+       $dir = $this->getJournalFileDir();
+
+       if (! directoryExists($dir)) {
+           try {
+
+           }
+           catch()
+           mkdir($dir, 0777, true);
+       }
+    }
+
+    public function getJournalFilename(): string
+    {
+        $filename = $_ENV['DB_JOURNAL_FILE'] ?? self::DEFAULT_FILE_NAME;
+        return $this->getJournalFileDir() . DIRECTORY_SEPARATOR . $filename;
+    }
+
+    public function getJournalFileDir(): string
+    {
+        $dir = $_ENV['DB_JOURNAL_DIR'] ?? self::DEFAULT_FILE_DIR;
+        return $dir;
     }
 
     /**
@@ -317,9 +360,13 @@ class DbJournalService
 
     /**
      * Ensure that every table journal will be updated to the current database timestamp
-     * @throws \Doctrine\DBAL\DBALException
      * @param array $options
      * @throws DbJournalConfigException
+     * @throws DbJournalOutputException
+     * @throws DbJournalRuntimeException
+     * @throws DbJournalUserException
+     * @throws \Doctrine\DBAL\DBALException
+     * @throws \Doctrine\DBAL\Types\ConversionException
      */
     public function update(array $options): void
     {
@@ -328,6 +375,8 @@ class DbJournalService
         if (empty($journals)) {
             throw new DbJournalConfigException("DbJournal table ({$this->internalTable}) is empty. Run `init`.");
         }
+
+        $this->checkJournalFileDir();
 
         $startTime = $this->time();
 
@@ -355,16 +404,21 @@ class DbJournalService
 
     /**
      * Update the Journal (file) for the given table / time
-     * @param $journal -- main journal table's record
-     * @param $currentTimeOption
+     * @param $journal
+     * @param bool $currentTimeOption
+     * @throws DbJournalConfigException
+     * @throws DbJournalOutputException
+     * @throws DbJournalRuntimeException
+     * @throws DbJournalUserException
      * @throws \Doctrine\DBAL\DBALException
+     * @throws \Doctrine\DBAL\Types\ConversionException
      */
     public function journalTable($journal, $currentTimeOption=false)
     {
-        $appStartTime = microtime(true);
+        $journalStartTime = microtime(true);
 
         // table's journal
-        $tableSql = [];
+        $tableSQL = [];
 
         $table = $journal['table_name'];
         $lastJournal = $journal['last_journal'];
@@ -374,8 +428,12 @@ class DbJournalService
 
         $this->output("<info>Journaling table `{$table}` between {$lastJournal} (last journal) and {$currentTime} (currrent time)</info>");
 
+        // let's use a transaction per table to ensure ATOMicity between the database and file
+        $this->conn->beginTransaction();
+
         // created_at: generate insert queries
         if (DbalService::tableHasColumn($table, $this->createdAtColumnName)) {
+
             // nice to have: Iterator
             $inserts = $this->conn->fetchAll(
                 "SELECT * FROM {$table}
@@ -385,26 +443,12 @@ class DbJournalService
                 [$lastJournal, $currentTime]
             );
 
-            // which SQL Statement will be generated
-            $operation = 'insert';
-
-            $totalInserts = count($inserts);
-
-            $this->output("{$totalInserts} insert statements to run", OutputInterface::VERBOSITY_VERBOSE);
-            $this->newProgressBar($totalInserts);
-
-            foreach ($inserts as $insertRow) {
-                $rowSql = $this->rowToJournal($table, $insertRow, $operation, $lastJournal, $currentTime);
-                $tableSql[] = $rowSql;
-                $this->advanceProgressBar();
-                $this->output(PHP_EOL . $rowSql, OutputInterface::VERBOSITY_VERY_VERBOSE);
-            }
-
-            $this->finishProgressBar();
+            $rowsToJournal['inserts'] = $inserts;
         }
 
         // updated_at: generate update queries
         if (DbalService::tableHasColumn($table, $this->updatedAtColumnName)) {
+
             // retrieve all the updates avoiding rows that generated inserts
             $updates = $this->conn->fetchAll(
                 "SELECT * FROM {$table}
@@ -422,30 +466,40 @@ class DbJournalService
                 [$lastJournal, $currentTime]
             );
 
-            // which SQL Statement will be generated
-            $operation = 'update';
+            $rowsToJournal['update'] = $updates;
 
-            $totalUpdates = count($updates);
+        }
 
-            $this->output("{$totalUpdates} update statements to run", OutputInterface::VERBOSITY_VERBOSE);
-            $this->newProgressBar($totalUpdates);
+        // inserts and then updates
+        foreach ($rowsToJournal as $operation => $rows) {
 
-            foreach ($updates as $updateRow) {
-                $rowSql = $this->rowToJournal($table, $updateRow, $operation, $lastJournal, $currentTime);
-                $tableSql[] = $rowSql;
+            $totalRows = count($rows);
+
+            $this->output("{$totalRows} {$operation} statements to run", OutputInterface::VERBOSITY_VERBOSE);
+            $this->newProgressBar($totalRows);
+
+            // one query per iteration
+            foreach ($rows as $row) {
+                $rowSql = $this->rowToSQL($table, $row, $operation, $lastJournal, $currentTime);
+                $tableSQLs[$operation] = $rowSql;
                 $this->advanceProgressBar();
                 $this->output(PHP_EOL . $rowSql, OutputInterface::VERBOSITY_VERY_VERBOSE);
             }
 
             $this->finishProgressBar();
-
         }
 
-        $executionTime = microtime(true) - $appStartTime;
+        $executionTime = microtime(true) - $journalStartTime;
 
-        // @TODO: BEGIN TRANSACTION / UPDATE / APPEND TO JOURNAL FILE / COMMIT (per table)
+        // first we update the journal table (we'll commit if the file is written successfully)
+        $this->conn->update($this->internalTable, ['table_name' => $table, 'last_journal' => $lastJournal, 'last_execution_time_miliseconds' => $executionTime], ['table_name' => $table]);
 
-        $this->conn->update($this->internalTable, ['last_journal' => $lastJournal, 'last_execution_time_miliseconds' => $executionTime], ['table_name' => $table]);
+        // then we write (append) the SQL queries to the journal file
+        // TODO: one file per table option
+        file_put_contents($this->getJournalFilename(), $tableSQL, FILE_APPEND);
+
+        // now we can commit the journal table update
+        $this->conn->commit();
 
         $this->output("<info>Journal updated for table `{$table}`</info>");
         $this->output("<info>Execution time: {$executionTime}</info>", OutputInterface::VERBOSITY_VERBOSE);
@@ -453,15 +507,20 @@ class DbJournalService
     }
 
     /**
+     * Convert a fetchAll() row to it's INSERT or UPDATE operation (between min and max timestamps) SQL string
      * @param $table
      * @param $row
      * @param $operation
      * @param $minTimestamp
      * @param $maxTimestamp
-     * @return string -- INSERT or UPDATE SQL
+     * @return string
+     * @throws DbJournalConfigException
      * @throws DbJournalRuntimeException
+     * @throws DbJournalUserException
+     * @throws \Doctrine\DBAL\DBALException
+     * @throws \Doctrine\DBAL\Types\ConversionException
      */
-    public function rowToJournal($table, $row, $operation, $minTimestamp, $maxTimestamp): string
+    public function rowToSQL($table, $row, $operation, $minTimestamp, $maxTimestamp): string
     {
         // get the operation's column name
         $baseColumn = $operation == 'update' ? $this->updatedAtColumnName : $this->createdAtColumnName;
@@ -471,46 +530,58 @@ class DbJournalService
             throw new DbJournalRuntimeException("Invalid row for table {$table}: " . json_encode($row));
         }
 
-        $queryBuilder = DbalService::getQueryBuilder();
-        $values = [];
+        $columnValues = [];
+
+        foreach ($row as $column => $value) {
+
+            // get SQL syntax string for the $value according to it's Type
+            $dbValue = DbalService::getDatabaseValue($value, $table, $column);
+
+            $columnValues[$column] = $dbValue;
+
+        }
 
         if ($operation == 'insert') {
-            $queryBuilder->insert($table);
-            foreach ($row as $column => $value) {
-                $queryBuilder->setValue($column, ":{$column}");
 
-                /**
-                 * TODO:
-                 * - why quote() is not distinguishing integers and non-quote types?
-                 * - find PK
-                 * - get column type
-                 * - detect if type requires $this->conn->quotes();
-                 * - see the full query being generated, escaped and quoted
-                 * - if necessary, use https://github.com/twister-php/sql (watchout)
-                 * - add the query meta tags
-                 * - implement update
-                 * - implement file saving
-                 * - implement transaction to have ATOM file + db
-                 * - implement load journal
-                 */
+            $sql = "INSERT INTO {$table} (`" . implode('`,`', array_keys($row)) . "`) VALUES (" . implode(", ", $columnValues) .   ");";
 
-                //
-                $dbValue = DbalService::getDatabaseValue($value, $table, $column);
+        }
+        // update
+        else {
 
-                $this->output("<info>{$dbValue}</info>");
+            $set = [];
 
-                $values[] = $dbValue;
+            foreach ($columnValues as $column => $value) {
+                $set[] = "`$column` = {$value}";
             }
 
-            $sql = "INSERT INTO {$table} (`" . implode('`,`', array_keys($row)) . "`) VALUES (" . implode(", ", $values) .   ");";
+            $tablePKs = DbalService::getTablePrimaryKeys($table);
+
+            // @TODO: ignore / ignore_all
+            if (empty($tablePKs)) {
+                throw new DbJournalUserException("Table {$table} has a `{$this->updatedAtColumnName}` column but doesn't have a Primary Key");
+            }
+
+            $wherePk = [];
+
+            foreach ($tablePKs as $pkColumnName) {
+
+                // get the PK's value
+                $value = $columnValues[$pkColumnName];
+
+                $wherePk[] = "`{$pkColumnName}` = " . $value;
+
+            }
+
+            $sql = "UPDATE {$table} set " . implode(', ', $set) . " WHERE " . implode('AND ', $wherePk) . ";";
 
         }
-        else {
-            $sql = "UPDATE {$table} set col = value WHERE PK = X;";
-        }
+
+        $this->output(PHP_EOL . "<info>{$sql}</info>", OutputInterface::VERBOSITY_DEBUG);
 
         return $sql;
     }
+
 
     public function updateJournalFile()
     {

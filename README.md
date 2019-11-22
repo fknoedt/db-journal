@@ -1,7 +1,11 @@
 # db-journal
 General purpose Database Journaling Tool based on doctrine/dbal
 
-.env confs
+### Version
+This is an Alpha version and shouldn't be used in any kind of production environment.
+
+### Configuration
+You can set your configuration on an `.env` file. These are DbJournal's configurations (docs coming soon):
 ```
 DB_HOST=
 DB_DATABASE=

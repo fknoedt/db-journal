@@ -129,7 +129,7 @@ class DbJournalCommand extends Command
         try {
 
             // `setup` will create the table, so let's not check for it
-            $ignoreTable = (in_array($action, ['setup','list']));
+            $ignoreTable = (in_array($action, ['setup','list', 'time']));
 
             // the constructor will load configs and run checks
             $service = new DbJournalService($output, $ignoreTable);

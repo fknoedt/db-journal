@@ -15,15 +15,28 @@ use Symfony\Component\Console\Output\OutputInterface;
 
 /**
  * Class DbJournalService
- * DbJournal Operation Manager
+ * DbJournal Main Methods, Logic and Operations
  *
- * @TODO:
- * - ignore internal table
- * - queries pattern
- * - check tivel's
- * - large database test
- * - write unit tests
- * - db_journal_sessions containing the time, log and execution time
+ * == Roadmap ==
+ *
+ * @TODO v0.1.0
+ * DONE
+ * - README.md
+ *
+ * @TODO v0.2.0
+ * - dump() with filters
+ *
+ * @TODO v0.3.0
+ * - run() to import and run journals in the current database
+ * - write unit and integration tests
+ *
+ * @TODO v0.4.0
+ * - namespace: working with parallel databases
+ *
+ * @TODO v0.5.0
+ * - new internal table `db_journal_sessions` containing the time, log and execution time of each command call
+ *
+ * ====
  *
  * @package DbJournal\Services
  */
@@ -647,10 +660,10 @@ class DbJournalService
 
         }
 
-        $operationTime = $columnValues[$columnUsed];
+        $operationTime = str_replace("'", "", $columnValues[$columnUsed]);
 
         // $pkColumns and $pkValues can be empty strings
-        return "/*|{$operationTime}|{$table}|{$columnUsed}|" . implode(self::DEFAULT_PK_SEPARATOR_QUERY_HEADER, array_keys($pkValue)) . "|" . implode(self::DEFAULT_PK_SEPARATOR_QUERY_HEADER, array_keys($pkValue)) . "|*/ " . $sql;
+        return "/*|{$operationTime}|{$table}|{$columnUsed}|" . implode(self::DEFAULT_PK_SEPARATOR_QUERY_HEADER, array_keys($pkValue)) . "|" . implode(self::DEFAULT_PK_SEPARATOR_QUERY_HEADER, $pkValue) . "|*/ " . $sql;
     }
 
     /**
@@ -714,7 +727,7 @@ class DbJournalService
     }
 
     /**
-     * Dump the journal file filtering by time
+     * Dump the journal file (filter by time and table)
      * @TODO: filter by table, min & max timestamps
      * @param null $table
      * @param $minTimestamp
@@ -728,20 +741,21 @@ class DbJournalService
 
         $queries = $this->getJournalFileContents($table, $minTimestamp, $maxTimestamp);
 
-        die('TODO from ' . __FILE__ . ':' . __LINE__);
+        dd($queries);
 
     }
 
     /**
      * Run the journal queries from the /var/import/* dir to the current database
-     * @return string
+     * @throws DbJournalUserException
      */
     public function run()
     {
-        return "TODO: run the journal queries from a /var/import dir to the current database";
+        throw new DbJournalUserException("To be implemented on v0.3.0: run the journal queries from a /var/import dir to the current database");
     }
 
     /**
+     * Return a filtered content of a journal file
      * @param $filePath
      * @param null $table
      * @param null $minTimestamp
@@ -761,6 +775,8 @@ class DbJournalService
         if (! ($table || $minTimestamp || $maxTimestamp)) {
             return $fileContent;
         }
+
+        throw new DbJournalUserException("To be implemented on v0.2.0: run the journal queries from a /var/import dir to the current database");
 
         // let's filter it
         foreach ($fileContent as $line) {

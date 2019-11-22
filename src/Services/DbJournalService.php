@@ -18,6 +18,7 @@ use Symfony\Component\Console\Output\OutputInterface;
  * DbJournal Operation Manager
  *
  * @TODO:
+ * - ignore internal table
  * - queries pattern
  * - check tivel's
  * - large database test
@@ -52,6 +53,11 @@ class DbJournalService
      * Defaul journal file name
      */
     const DEFAULT_FILE_NAME = 'journal.dump';
+
+    /**
+     * The /* header * / before each query in the journal file contains the PK
+     */
+    const DEFAULT_PK_SEPARATOR_QUERY_HEADER = '%';
 
     /**
      * @var \Doctrine\DBAL\Connection
@@ -263,6 +269,10 @@ class DbJournalService
         // iterate on every table
         foreach (DbalService::getTablesColumnsMap() as $table => $columns) {
 
+            if ($table == $this->internalTable) {
+                continue;
+            }
+
             foreach ($columns as $columnName => $column) {
                 // if the table has one or both columns,
                 if (in_array($columnName, [$this->createdAtColumnName, $this->updatedAtColumnName])) {
@@ -312,7 +322,6 @@ class DbJournalService
             catch(\Exception $e) {
                 throw new DbJournalConfigException("Could not create directory {$dir}");
             }
-
         }
     }
 
@@ -382,7 +391,7 @@ class DbJournalService
         }
         else {
             $startTime = $this->time();
-            $forceUpdate = true;
+            $forceUpdate = false;
         }
 
         $this->output("<info>Journal time: {$startTime} (next `update` will generate journals for operations between this datetime and the execution time)</info>");
@@ -461,7 +470,7 @@ class DbJournalService
         // optional time will overwrite the default (database now())
         $currentTime = $currentTimeOption ? $currentTimeOption : $this->time();
 
-        $this->output("<info>Journaling table `{$table}` between {$lastJournal} (last journal) and {$currentTime} (currrent time)</info>");
+        $this->output("<info>Journaling table `{$table}` between {$lastJournal} (last journal) and {$currentTime} (currrent time)</info>", OutputInterface::VERBOSITY_VERBOSE);
 
         // let's use a transaction per table to ensure ATOMicity between the database and file
         $this->conn->beginTransaction();
@@ -544,7 +553,7 @@ class DbJournalService
         // now we can commit the journal table update
         $this->conn->commit();
 
-        $this->output("<info>Journal updated for table `{$table}`</info>");
+        $this->output("<info>Journal updated for table `{$table}`</info>", OutputInterface::VERBOSITY_VERBOSE);
         $this->output("<info>Execution time: {$executionTime}</info>", OutputInterface::VERBOSITY_VERBOSE);
 
     }
@@ -581,9 +590,46 @@ class DbJournalService
             $columnValues[$column] = $dbValue;
         }
 
+        // handle PKs
+
+        // update query where clauses
+        $wherePk = [];
+
+        // [$pkColumnName => $pkValue]
+        $pkValue = [];
+
+        $tablePKs = DbalService::getTablePrimaryKeys($table);
+
+        if (empty($tablePKs)) {
+
+            if ($operation == 'update') {
+                // TODO: ignore / ignore_all
+                throw new DbJournalUserException("Table {$table} has a `{$this->updatedAtColumnName}` column but doesn't have a Primary Key");
+            }
+
+        } else {
+
+            foreach ($tablePKs as $pkColumnName) {
+                // get the PK's value
+                $value = $columnValues[$pkColumnName];
+
+                // no PK column name containing the separator is allowed
+                if ($pkColumnName == self::DEFAULT_PK_SEPARATOR_QUERY_HEADER) {
+                    // TODO: .env config
+                    throw new DbJournalUserException("PK Column {$pkColumnName} on table {$table} contains the illegal character " . self::DEFAULT_PK_SEPARATOR_QUERY_HEADER);
+                }
+
+                $pkValue[$pkColumnName] = $value;
+
+                $wherePk[] = "`{$pkColumnName}` = " . $value;
+            }
+
+        }
+
         if ($operation == 'insert') {
 
             $sql = "INSERT INTO {$table} (`" . implode('`,`', array_keys($row)) . "`) VALUES (" . implode(", ", $columnValues) .   ");";
+            $columnUsed = $this->createdAtColumnName;
 
         }
         // update
@@ -595,26 +641,16 @@ class DbJournalService
                 $set[] = "`$column` = {$value}";
             }
 
-            $tablePKs = DbalService::getTablePrimaryKeys($table);
-
-            // @TODO: ignore / ignore_all
-            if (empty($tablePKs)) {
-                throw new DbJournalUserException("Table {$table} has a `{$this->updatedAtColumnName}` column but doesn't have a Primary Key");
-            }
-
-            $wherePk = [];
-
-            foreach ($tablePKs as $pkColumnName) {
-                // get the PK's value
-                $value = $columnValues[$pkColumnName];
-                $wherePk[] = "`{$pkColumnName}` = " . $value;
-            }
-
             $sql = "UPDATE {$table} set " . implode(', ', $set) . " WHERE " . implode('AND ', $wherePk) . ";";
+
+            $columnUsed = $this->updatedAtColumnName;
 
         }
 
-        return $sql;
+        $operationTime = $columnValues[$columnUsed];
+
+        // $pkColumns and $pkValues can be empty strings
+        return "/*|{$operationTime}|{$table}|{$columnUsed}|" . implode(self::DEFAULT_PK_SEPARATOR_QUERY_HEADER, array_keys($pkValue)) . "|" . implode(self::DEFAULT_PK_SEPARATOR_QUERY_HEADER, array_keys($pkValue)) . "|*/ " . $sql;
     }
 
     /**
@@ -651,7 +687,9 @@ class DbJournalService
                 $count++;
             }
 
-            $this->output("Journal: table {$table} entry {$operation}", OutputInterface::VERBOSITY_VERBOSE);
+            if (isset($operation)) {
+                $this->output("Journal: table {$table} entry {$operation}", OutputInterface::VERBOSITY_VERBOSE);
+            }
         }
 
         return $count;
@@ -667,23 +705,31 @@ class DbJournalService
     }
 
     /**
-     * Drop the journal table and
+     * Drop the journal table, remove the files and show the composer command to remove the package
      */
     public function uninstall(): void
     {
-        $this->output("Table {$this->internalTable} deleted");
-
-        $this->output("Journal files deleted");
+        $this->output("TODO: Drop the journal table, remove the files and show the composer command to remove the package");
+        exit;
     }
 
     /**
      * Dump the journal file filtering by time
-     * @TODO: filter by min & max timestamps
-     * @return string
+     * @TODO: filter by table, min & max timestamps
+     * @param null $table
+     * @param $minTimestamp
+     * @param $maxTimestamp
+     * @return false|string
+     * @throws DbJournalUserException
      */
-    public function dump()
+    public function dump($table=null, $minTimestamp=null, $maxTimestamp=null): string
     {
-        return file_get_contents($this->getJournalFilename());
+        $filePath = $this->getJournalFilename();
+
+        $queries = $this->getJournalFileContents($table, $minTimestamp, $maxTimestamp);
+
+        die('TODO from ' . __FILE__ . ':' . __LINE__);
+
     }
 
     /**
@@ -693,6 +739,33 @@ class DbJournalService
     public function run()
     {
         return "TODO: run the journal queries from a /var/import dir to the current database";
+    }
+
+    /**
+     * @param $filePath
+     * @param null $table
+     * @param null $minTimestamp
+     * @param null $maxTimestamp
+     * @return array
+     * @throws DbJournalUserException
+     */
+    public function getJournalFileContents($filePath, $table=null, $minTimestamp=null, $maxTimestamp=null): array
+    {
+        $fileContent = file_get_contents($filePath);
+
+        if (! $fileContent) {
+            throw new DbJournalUserException("The file {$filePath} doesn't exist or is empty. Make sure it has a valid journal file.");
+        }
+
+        // no filters: just return the file content as is
+        if (! ($table || $minTimestamp || $maxTimestamp)) {
+            return $fileContent;
+        }
+
+        // let's filter it
+        foreach ($fileContent as $line) {
+
+        }
     }
 
     /**

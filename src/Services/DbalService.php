@@ -311,6 +311,7 @@ class DbalService
         $type = DbalService::getColumnType($table, $column);
 
         // cast to the PHP value according to the Type
+        // TODO: this should be unnecessary since we already have the values in strings
         $value = $type->convertToPHPValue($value, self::getPlatform());
 
         if (self::shouldQuote($type->getBindingType())) {

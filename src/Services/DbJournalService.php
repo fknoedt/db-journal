@@ -20,11 +20,10 @@ use Symfony\Component\Console\Output\OutputInterface;
  * == Roadmap ==
  *
  * @TODO v0.1.0
- * DONE
- * - README.md
+ * - basic functionality working ✓
  *
  * @TODO v0.2.0
- * - dump() with filters
+ * - dump() with filters ✓
  *
  * @TODO v0.3.0
  * - run() to import and run journals in the current database
@@ -560,7 +559,7 @@ class DbJournalService
         // then we write (append) the SQL queries to the journal file
         // TODO: one file per table option
         foreach ($tableSQLs as $operation => $queries) {
-            file_put_contents($this->getJournalFilename(), implode(PHP_EOL, $queries), FILE_APPEND);
+            file_put_contents($this->getJournalFilename(), PHP_EOL . implode(PHP_EOL, $queries), FILE_APPEND);
         }
 
         // now we can commit the journal table update
@@ -663,7 +662,7 @@ class DbJournalService
         $operationTime = str_replace("'", "", $columnValues[$columnUsed]);
 
         // $pkColumns and $pkValues can be empty strings
-        return "/*|{$operationTime}|{$table}|{$columnUsed}|" . implode(self::DEFAULT_PK_SEPARATOR_QUERY_HEADER, array_keys($pkValue)) . "|" . implode(self::DEFAULT_PK_SEPARATOR_QUERY_HEADER, $pkValue) . "|*/ " . $sql;
+        return "/*{$operationTime}|{$table}|{$columnUsed}|" . implode(self::DEFAULT_PK_SEPARATOR_QUERY_HEADER, array_keys($pkValue)) . "|" . implode(self::DEFAULT_PK_SEPARATOR_QUERY_HEADER, $pkValue) . "*/ " . $sql;
     }
 
     /**
@@ -728,21 +727,20 @@ class DbJournalService
 
     /**
      * Dump the journal file (filter by time and table)
-     * @TODO: filter by table, min & max timestamps
      * @param null $table
      * @param $minTimestamp
      * @param $maxTimestamp
      * @return false|string
-     * @throws DbJournalUserException
+     * @throws DbJournalConfigException
+     * @throws DbJournalRuntimeException
      */
-    public function dump($table=null, $minTimestamp=null, $maxTimestamp=null): string
+    public function dump($table=null, $minTimestamp=null, $maxTimestamp=null): array
     {
         $filePath = $this->getJournalFilename();
 
-        $queries = $this->getJournalFileContents($table, $minTimestamp, $maxTimestamp);
+        $queries = $this->getJournalFileContents($filePath, $table, $minTimestamp, $maxTimestamp);
 
-        dd($queries);
-
+        return $queries;
     }
 
     /**
@@ -761,27 +759,72 @@ class DbJournalService
      * @param null $minTimestamp
      * @param null $maxTimestamp
      * @return array
-     * @throws DbJournalUserException
+     * @throws DbJournalConfigException
+     * @throws DbJournalRuntimeException
      */
     public function getJournalFileContents($filePath, $table=null, $minTimestamp=null, $maxTimestamp=null): array
     {
-        $fileContent = file_get_contents($filePath);
+        $fileContent = file($filePath, FILE_IGNORE_NEW_LINES);
 
         if (! $fileContent) {
-            throw new DbJournalUserException("The file {$filePath} doesn't exist or is empty. Make sure it has a valid journal file.");
+            throw new DbJournalConfigException("The file {$filePath} doesn't exist or is empty. Make sure it has a valid journal file (have you ever ran `update`?).");
         }
 
-        // no filters: just return the file content as is
-        if (! ($table || $minTimestamp || $maxTimestamp)) {
-            return $fileContent;
-        }
+        $content = [];
 
-        throw new DbJournalUserException("To be implemented on v0.2.0: run the journal queries from a /var/import dir to the current database");
+        $lineNumber = 0;
 
-        // let's filter it
+        // let's [filter and] remove the comments for each query
         foreach ($fileContent as $line) {
 
+            $matches = [];
+            $lineNumber++;
+
+            //Sempre deve começar com um comentário que terá o nome da tabela, a data do registro e o(s) campo(s) de chave primária
+            if (preg_match('=^/\*(.*)?\*/=', $line, $matches))  {
+
+                $queryInfo = explode('|', $matches[1]);
+
+                $queryTime = $queryInfo[0];
+                $queryTable = $queryInfo[1];
+
+                // table filter
+                if ($table && $table != $queryTable) {
+                    $this->output("Table `{$queryTable}` doesn't match `{$table}`. Skipping", OutputInterface::VERBOSITY_DEBUG);
+                    continue;
+                }
+
+                if ($maxTimestamp && $queryTime > $maxTimestamp) {
+                    $this->output("Query timestamp `{$queryTime}` exceeds `{$maxTimestamp}`. Skipping", OutputInterface::VERBOSITY_DEBUG);
+                    continue;
+                }
+
+                if ($minTimestamp && $queryTime < $minTimestamp) {
+                    $this->output("Query timestamp `{$queryTime}` exceeds `{$minTimestamp}`. Skipping", OutputInterface::VERBOSITY_DEBUG);
+                    continue;
+                }
+
+                $query = str_replace($matches[0] . ' ', '', $line);
+
+                $content[] = $query;
+
+            }
+            else {
+
+                // empty line: ignore
+                if (empty($line)) {
+                    continue;
+                }
+
+                throw new DbJournalRuntimeException("Journal: Invalid line ({$lineNumber}): {$line}");
+
+            }
+
         }
+
+        return $content;
+
+
     }
 
     /**

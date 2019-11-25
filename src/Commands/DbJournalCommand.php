@@ -59,7 +59,10 @@ class DbJournalCommand extends Command
      * @var array
      */
     public static $options = [
-        'time' => 'timestamp'
+        'time'      => 'timestamp',
+        'table'     => 'string',
+        'mintime'   => 'timestamp',
+        'maxtime'   => 'timestamp'
     ];
 
     /**
@@ -87,22 +90,13 @@ class DbJournalCommand extends Command
             ->addArgument('action', InputArgument::REQUIRED, 'DbJournal Action')
 
             ->addOption('time', 't', InputOption::VALUE_OPTIONAL, 'Time used to manipulate (init, update, dump,...) the Journal')
+
+            ->addOption('table', 'tbl', InputOption::VALUE_OPTIONAL, 'Table to restrict the operation to')
+
+            ->addOption('mintime', 'gt', InputOption::VALUE_OPTIONAL, 'Minimum query time when dumping the Journal')
+
+            ->addOption('maxtime', 'lt', InputOption::VALUE_OPTIONAL, 'Maximum query time when dumping the Journal')
         ;
-    }
-
-    /**
-     * @param string $tab
-     * @return array
-     */
-    public function getCommandsList($tab="\t"): array
-    {
-        $list = [];
-
-        foreach (self::$commands as $command => $description) {
-            $list[] = "{$command}{$tab}{$tab}{$tab}{$description}";
-        }
-
-        return $list;
     }
 
     /**
@@ -117,6 +111,9 @@ class DbJournalCommand extends Command
     {
         $outputStyle = new OutputFormatterStyle('white', 'green', ['bold', 'blink']);
         $output->getFormatter()->setStyle('success', $outputStyle);
+
+        $outputStyle = new OutputFormatterStyle('red', 'default', ['bold', 'blink']);
+        $output->getFormatter()->setStyle('db-error', $outputStyle);
 
         // 1 means the command has ran
         $returnCode = 1;
@@ -167,7 +164,12 @@ class DbJournalCommand extends Command
 
                 case 'dump':
 
-                    $output->writeln($service->dump());
+                    $table          = $options['table'] ?? null;
+                    $minTimestamp   = $options['mintime'] ?? null;
+                    $maxTimestamp   = $options['maxtime'] ?? null;
+
+                    $output->writeln(implode($service->dump($table, $minTimestamp, $maxTimestamp), PHP_EOL));
+
                     $callAction = false;
 
                     break;
@@ -239,7 +241,7 @@ class DbJournalCommand extends Command
             $output->writeln('<error>' . $e->getMessage() . '</error>');
         }
         catch (DbJournalUserException $e) {
-            $output->writeln('<db-error>' . $e->getMessage() . '</db-error>');
+            $output->writeln('<db-error>DB Error: ' . $e->getMessage() . '</db-error>');
         }
         // technical error: check APP_DEBUG
         catch (\Exception $e) {
@@ -268,6 +270,8 @@ class DbJournalCommand extends Command
      * @param InputInterface $input
      * @param OutputInterface $output
      * @return array
+     * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\DBALException
      */
     public function sanitizeOptions(InputInterface $input, OutputInterface $output): array
     {
@@ -285,7 +289,6 @@ class DbJournalCommand extends Command
                 switch ($optionType) {
 
                     case 'timestamp':
-
                         // no datetime
                         if (! v::date(DbJournalService::DB_DATETIME_FORMAT)->validate($value)) {
                             // date?
@@ -295,6 +298,15 @@ class DbJournalCommand extends Command
                                 throw new InvalidOptionException("Option `{$option}` ({$value}) is invalid. Use " . DbJournalService::DB_DATETIME_FORMAT . ' or ' . DbJournalService::DB_DATE_FORMAT);
                             }
                         }
+                        break;
+
+                    case 'string':
+                        $tablesMap = DbalService::getTablesColumnsMap();
+
+                        if (! isset($tablesMap[$value])) {
+                            throw new InvalidOptionException("Invalid table: {$value}");
+                        }
+
                         break;
 
                     default:

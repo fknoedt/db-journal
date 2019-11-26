@@ -42,9 +42,9 @@ And these are non-mandatory options to customize your DbJournal:
 
 `DB_JOURNAL_TABLE`: How do you want the main internal Journal table to be named (you should be ok to use prefixes/schema here)
 
-`DB_JOURNAL_CREATED_AT_NAME`: The name of your DB's `created_at` columns 
+`DB_JOURNAL_CREATED_AT_COLUMN_NAME`: The name of your DB's `created_at` columns 
 
-`DB_JOURNAL_UPDATED_AT_NAME`: The name of your DB's `updated_at` columns
+`DB_JOURNAL_UPDATED_AT_COLUMN_NAME`: The name of your DB's `updated_at` columns
 
 `DB_JOURNAL_TABLES_FILTER`: To restrict the Journal operations to one or more tables, set them separated by comma (`,`) 
 

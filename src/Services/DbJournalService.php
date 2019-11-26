@@ -26,7 +26,7 @@ use Symfony\Component\Console\Output\OutputInterface;
  * - dump() with filters ✓
  *
  * @TODO v0.3.0
- * - run() to import and run journals in the current database
+ * - run() to import and run journals in the current database (with checks to avoid row conflict)
  * - write unit and integration tests
  *
  * @TODO v0.4.0
@@ -62,6 +62,11 @@ class DbJournalService
     const DEFAULT_FILE_DIR = __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'journal';
 
     /**
+     * Default journal backup directory
+     */
+    const DEFAULT_BKP_DIR = __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'bkp';
+
+    /**
      * Defaul journal file name
      */
     const DEFAULT_FILE_NAME = 'journal.dump';
@@ -70,6 +75,18 @@ class DbJournalService
      * The /* header * / before each query in the journal file contains the PK
      */
     const DEFAULT_PK_SEPARATOR_QUERY_HEADER = '%';
+
+    /**
+     * Datetime format for input and stored values
+     * @var string
+     */
+    const DB_DATETIME_FORMAT = 'Y-m-d H:i:s';
+
+    /**
+     * Date format for input and stored values
+     * @var string
+     */
+    const DB_DATE_FORMAT = 'Y-m-d';
 
     /**
      * @var \Doctrine\DBAL\Connection
@@ -112,16 +129,10 @@ class DbJournalService
     protected $updatedAtColumnName = 'updated_at';
 
     /**
-     * Datetime format for input and stored values
-     * @var string
+     * Hash map for the INSERTs created (so we can avoid UPDATEs for the same record)
+     * @var
      */
-    CONST DB_DATETIME_FORMAT = 'Y-m-d H:i:s';
-
-    /**
-     * Date format for input and stored values
-     * @var string
-     */
-    CONST DB_DATE_FORMAT = 'Y-m-d';
+    protected $insertQueriesCreated = [];
 
     /**
      * Execution time (start) with milliseconds
@@ -156,6 +167,11 @@ class DbJournalService
 
         $this->output('Configs loaded', OutputInterface::VERBOSITY_VERBOSE);
 
+        // set custom Types handlers
+        $this->registerCustomTypes();
+
+        $this->output('Custom Types registered', OutputInterface::VERBOSITY_VERBOSE);
+
         // internalTable is defined within loadConfigs()
         if (! $this->internalTable) {
             throw new DbJournalConfigException("Table name not defined (DB_JOURNAL_TABLE) on .env");
@@ -179,13 +195,13 @@ class DbJournalService
         $this->internalTable = $_ENV['DB_JOURNAL_TABLE'] ?? $this->internalTable;
 
         // custom or default `created_at` column name
-        $this->createdAtColumnName = $_ENV['DB_JOURNAL_CREATED_AT_NAME'] ?? $this->createdAtColumnName;
+        $this->createdAtColumnName = $_ENV['DB_JOURNAL_CREATED_AT_COLUMN_NAME'] ?? $this->createdAtColumnName;
 
         // custom or default `updated_at` column name
-        $this->updatedAtColumnName = $_ENV['DB_JOURNAL_UPDATED_AT_NAME'] ?? $this->updatedAtColumnName;
+        $this->updatedAtColumnName = $_ENV['DB_JOURNAL_UPDATED_AT_COLUMN_NAME'] ?? $this->updatedAtColumnName;
 
         if (empty($this->createdAtColumnName) || empty($this->updatedAtColumnName)) {
-            throw new DbJournalConfigException("You cannot have an empty entry for DB_JOURNAL_CREATED_AT_NAME or DB_JOURNAL_UPDATED_AT_NAME on .env");
+            throw new DbJournalConfigException("You cannot have an empty entry for DB_JOURNAL_CREATED_AT_COLUMN_NAME or DB_JOURNAL_UPDATED_AT_COLUMN_NAME on .env");
         }
 
         // custom tables to journal
@@ -201,6 +217,17 @@ class DbJournalService
         else {
             $this->tables = [];
         }
+    }
+
+    /**
+     * Custom Types need to be configured so DBAL knows how to handle them
+     * @throws DbJournalConfigException
+     * @throws \Doctrine\DBAL\DBALException
+     */
+    public function registerCustomTypes()
+    {
+        // enum
+        DbalService::getSchemaManager()->getDatabasePlatform()->registerDoctrineTypeMapping('enum', 'string');
     }
 
     /**
@@ -304,28 +331,34 @@ class DbJournalService
      */
     public function getJournalFilename(): string
     {
-        $filename = $_ENV['DB_JOURNAL_FILE'] ?? self::DEFAULT_FILE_NAME;
-        return $this->getJournalFileDir() . DIRECTORY_SEPARATOR . $filename;
+        return $_ENV['DB_JOURNAL_FILE'] ?? self::DEFAULT_FILE_NAME;
     }
 
     /**
      * Return the journal file directory from the .env conf or the default one
      * @return string
      */
-    public function getJournalFileDir(): string
+    public function getJournalDir(): string
     {
-        $dir = $_ENV['DB_JOURNAL_DIR'] ?? self::DEFAULT_FILE_DIR;
-        return $dir;
+        return $_ENV['DB_JOURNAL_DIR'] ?? self::DEFAULT_FILE_DIR;
     }
 
     /**
-     * Ensure that the journal directory exists
+     * Return the journal file name from the .env conf or the default one
+     * @return string
+     */
+    public function getJournalFilepath(): string
+    {
+        return $this->getJournalDir() . DIRECTORY_SEPARATOR . $this->getJournalFilename();
+    }
+
+    /**
+     * Ensure that the journal directory (current or backup) exists
+     * @param $dir
      * @throws DbJournalConfigException
      */
-    public function checkJournalFileDir()
+    public function checkJournalDir($dir)
     {
-        $dir = $this->getJournalFileDir();
-
         if (! is_dir($dir)) {
             try {
                 mkdir($dir, 0777, true);
@@ -335,6 +368,59 @@ class DbJournalService
                 throw new DbJournalConfigException("Could not create directory {$dir}");
             }
         }
+    }
+
+    /**
+     * @param $table
+     * @param $pkValuesString
+     * @throws DbJournalRuntimeException
+     */
+    public function addInsertQuery($table, $pkValuesString): void
+    {
+        if (isset($this->insertQueriesCreated[$table][$pkValuesString])) {
+            throw new DbJournalRuntimeException("Cannot generate the same INSERT more than once");
+        }
+        $this->insertQueriesCreated[$table][$pkValuesString] = true;
+    }
+
+    /**
+     * Check if an INSERT query was generated for this $table / $pk
+     * @param $table
+     * @param $pkValuesString
+     * @return bool
+     */
+    public function hasInsertedQuery($table, $pkValuesString): bool
+    {
+        return isset($this->insertQueriesCreated[$table][$pkValuesString]);
+    }
+
+    /**
+     * Move the current journal dump file to the backup dir
+     * @param null $newFilename -- backup file path (dir + filename)
+     * @throws \Doctrine\DBAL\DBALException
+     * @throws DbJournalConfigException
+     */
+    public function backupJournalFile($newFilename=null): void
+    {
+        if (! file_exists($this->getJournalFilepath())) {
+            $this->output("No Journal file to backup", OutputInterface::VERBOSITY_VERBOSE);
+            return;
+        }
+
+        // bkp file name will be YYYY-mm-dd_H_i_s_journal.dump
+        if (! $newFilename) {
+            $newFilename = str_replace([' ', ':'], '_', $this->time()) . '_' . $this->getJournalFilename();
+        }
+
+        // ensure the main journal directory exists
+        $this->checkJournalDir(self::DEFAULT_BKP_DIR);
+
+        // move file
+        $bkpPath = self:: DEFAULT_BKP_DIR . DIRECTORY_SEPARATOR . $newFilename;
+
+        rename($this->getJournalFilepath(), $bkpPath);
+
+        $this->output("Journal dump file backed up on {$bkpPath}", OutputInterface::VERBOSITY_VERBOSE);
     }
 
     /**
@@ -397,9 +483,6 @@ class DbJournalService
         if (isset($options['time']) && $options['time']) {
             $startTime = $options['time'];
             $forceUpdate = true;
-
-            // TODO: backup journal dump file
-
         }
         else {
             $startTime = $this->time();
@@ -412,8 +495,14 @@ class DbJournalService
         $count = $this->populateDatabase($startTime, $forceUpdate);
 
         $this->output("<success>{$count} table(s) populated/updated" . ($count > 0 ? ". Here we go." : "") . "</success>");
+
+        // one or more
+        if ($count > 0) {
+            $this->backupJournalFile();
+        }
     }
 
+    /**
     /**
      * Ensure that every table journal will be updated to the current database timestamp
      * @param array $options
@@ -432,11 +521,10 @@ class DbJournalService
             throw new DbJournalConfigException("DbJournal table ({$this->internalTable}) is empty. Run `init`.");
         }
 
-        $this->checkJournalFileDir();
+        // ensure the main journal directory exists
+        $this->checkJournalDir($this->getJournalDir());
 
         $startTime = $this->time();
-
-        // @TODO if $options['time']: prompt WILL DELETE THE CURRENT JOURNAL!
 
         $currentTimeOption = $options['time'] ?? null;
 
@@ -455,7 +543,7 @@ class DbJournalService
             $this->journalTable($journal, $currentTimeOption);
         }
 
-        $this->output("<success>Update finished. SQL queries appended to {$this->getJournalFilename()}</success>");
+        $this->output("<success>Update finished. SQL queries appended to {$this->getJournalFilepath()}</success>");
     }
 
     /**
@@ -495,7 +583,8 @@ class DbJournalService
                 "SELECT * FROM {$table}
                 WHERE {$this->createdAtColumnName} > ?
                 &&
-                {$this->createdAtColumnName} <= ?",
+                {$this->createdAtColumnName} <= ?
+                ORDER BY {$this->createdAtColumnName} ASC",
                 [$lastJournal, $currentTime]
             );
 
@@ -518,7 +607,9 @@ class DbJournalService
                     OR
                     -- let's get this guy if created_at was not set
                     {$this->createdAtColumnName} IS NULL
-                );",
+                )
+                ORDER BY {$this->updatedAtColumnName} ASC
+                ;",
                 [$lastJournal, $currentTime]
             );
 
@@ -539,10 +630,19 @@ class DbJournalService
 
                 // one query per iteration
                 foreach ($rows as $row) {
+
                     $rowSql = $this->rowToSQL($table, $row, $operation, $lastJournal, $currentTime);
+
+                    // SQL can be empty if it's an UPDATE for a record that already had an INSERT
+                    if (empty($rowSql)) {
+                        $this->output(PHP_EOL . "<info>UPDATE query skipped</info>", OutputInterface::VERBOSITY_DEBUG);
+                        continue;
+                    }
+
                     $tableSQLs[$operation][] = $rowSql;
                     $this->advanceProgressBar();
                     $this->output(PHP_EOL . "<info>{$rowSql}</info>", OutputInterface::VERBOSITY_DEBUG);
+
                 }
 
                 $this->finishProgressBar();
@@ -557,9 +657,9 @@ class DbJournalService
         $this->conn->update($this->internalTable, ['table_name' => $table, 'last_journal' => $currentTime, 'last_execution_time_milliseconds' => $executionTime], ['table_name' => $table]);
 
         // then we write (append) the SQL queries to the journal file
-        // TODO: one file per table option
+        // TODO?: one file per table option
         foreach ($tableSQLs as $operation => $queries) {
-            file_put_contents($this->getJournalFilename(), PHP_EOL . implode(PHP_EOL, $queries), FILE_APPEND);
+            file_put_contents($this->getJournalFilepath(), PHP_EOL . implode(PHP_EOL, $queries), FILE_APPEND);
         }
 
         // now we can commit the journal table update
@@ -612,16 +712,17 @@ class DbJournalService
 
         $tablePKs = DbalService::getTablePrimaryKeys($table);
 
+        // every journaled table has to have a PK (even for INSERT as we wanna avoid an UPDATE later for the same record
+        // and the only way to ensure that is by the row's PK)
         if (empty($tablePKs)) {
 
-            if ($operation == 'update') {
-                // TODO: ignore / ignore_all
-                throw new DbJournalUserException("Table {$table} has a `{$this->updatedAtColumnName}` column but doesn't have a Primary Key");
-            }
+            // TODO?: ignore / ignore_all
+            throw new DbJournalUserException("Table {$table} has a `{$this->updatedAtColumnName}` column but doesn't have a Primary Key");
 
         } else {
 
             foreach ($tablePKs as $pkColumnName) {
+
                 // get the PK's value
                 $value = $columnValues[$pkColumnName];
 
@@ -634,18 +735,31 @@ class DbJournalService
                 $pkValue[$pkColumnName] = $value;
 
                 $wherePk[] = "`{$pkColumnName}` = " . $value;
+
             }
 
         }
+
+        // primary key(s) name / value are used to ensure the same row won't be UPDATED after an INSERT (as that would be redundant)
+        $pkColumnsString = implode(self::DEFAULT_PK_SEPARATOR_QUERY_HEADER, array_keys($pkValue));
+        $pkValuesString = implode(self::DEFAULT_PK_SEPARATOR_QUERY_HEADER, $pkValue);
 
         if ($operation == 'insert') {
 
             $sql = "INSERT INTO {$table} (`" . implode('`,`', array_keys($row)) . "`) VALUES (" . implode(", ", $columnValues) .   ");";
             $columnUsed = $this->createdAtColumnName;
 
+            //
+            $this->addInsertQuery($table, $pkValuesString);
+
         }
         // update
         else {
+
+            // we don't wanna create an UPDATE if we just created an INSERT that will get the same result
+            if ($this->hasInsertedQuery($table, $pkValuesString)) {
+                return '';
+            }
 
             $set = [];
 
@@ -659,10 +773,11 @@ class DbJournalService
 
         }
 
+        // created_at or updated_at
         $operationTime = str_replace("'", "", $columnValues[$columnUsed]);
 
         // $pkColumns and $pkValues can be empty strings
-        return "/*{$operationTime}|{$table}|{$columnUsed}|" . implode(self::DEFAULT_PK_SEPARATOR_QUERY_HEADER, array_keys($pkValue)) . "|" . implode(self::DEFAULT_PK_SEPARATOR_QUERY_HEADER, $pkValue) . "*/ " . $sql;
+        return "/*{$operationTime}|{$table}|{$columnUsed}|{$pkColumnsString}|{$pkValuesString}*/ " . $sql;
     }
 
     /**
@@ -736,7 +851,7 @@ class DbJournalService
      */
     public function dump($table=null, $minTimestamp=null, $maxTimestamp=null): array
     {
-        $filePath = $this->getJournalFilename();
+        $filePath = $this->getJournalFilepath();
 
         $queries = $this->getJournalFileContents($filePath, $table, $minTimestamp, $maxTimestamp);
 

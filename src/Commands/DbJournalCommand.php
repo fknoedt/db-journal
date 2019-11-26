@@ -215,8 +215,9 @@ class DbJournalCommand extends Command
                     // update with a fixed time can easily mess up your journal - watch out
                     if (isset($options['time']) && $options['time']) {
                         $helper = $this->getHelper('question');
-                        $question = new ConfirmationQuestion("This will start your journals for every (able) table starting on the optional date." . PHP_EOL .
-                            "Are you sure you want to initialize the Journal starting on {$options['time']}?", false);
+                        $question = new ConfirmationQuestion("This will (re)start your journals for every (able) table starting on {$options['time']}." . PHP_EOL .
+                            "WARNING: any current journal will be completely lost (the dump file will be backed up on `/var/bkp`)" . PHP_EOL .
+                            "Are you sure you want to continue? ", false);
                         if (!$helper->ask($input, $output, $question)) {
                             return;
                         }
@@ -237,7 +238,7 @@ class DbJournalCommand extends Command
 
         }
         // functional error: show the message to the user
-        catch (DbJournalConfigException $e) {
+        catch (DbJournalConfigException | InvalidOptionException $e) {
             $output->writeln('<error>' . $e->getMessage() . '</error>');
         }
         catch (DbJournalUserException $e) {

@@ -1,0 +1,9 @@
+site_name: DbJournal
+theme: readthedocs
+nav:
+  - 'index.md'
+  - 'introduction.md'
+  - 'how-it-works.md'
+  - 'configuration.md'
+  - 'setup.md'
+  - 'commands.md'

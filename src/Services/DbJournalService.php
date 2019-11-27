@@ -26,13 +26,16 @@ use Symfony\Component\Console\Output\OutputInterface;
  * - dump() with filters ✓
  *
  * @TODO v0.3.0
+ * - ReadTheDocs Documentation
+ *
+ * @TODO v0.4.0
  * - run() to import and run journals in the current database (with checks to avoid row conflict)
  * - write unit and integration tests
  *
- * @TODO v0.4.0
+ * @TODO v0.5.0
  * - namespace: working with parallel databases
  *
- * @TODO v0.5.0
+ * @TODO v0.6.0
  * - new internal table `db_journal_sessions` containing the time, log and execution time of each command call
  *
  * ====

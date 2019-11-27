@@ -24,4 +24,4 @@ If you have different database instances on different environments and need to w
 
 For example, if you use a CMS on a multi environment setup and all the yet-to-be-released changes made through the CMS are done in a centralized internal database, how do you publish those changes to the production database upon release?
 
-DbJournal allows exporting (see the [dump](dump.md) command) all the queries that the CMS ran on that database for a given period of time / specific tables so you can run it on the production database making it up to date with the internal changes without losing any production data. 
+DbJournal allows exporting (see the [dump](commands.md#dump) command) all the queries that the CMS ran on that database for a given period of time / specific tables so you can run it on the production database making it up to date with the internal changes without losing any production data. 

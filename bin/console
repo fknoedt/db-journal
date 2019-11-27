@@ -1,0 +1,30 @@
+#!/usr/bin/env php
+<?php
+
+$autoloadPath = __DIR__ . '/../vendor/autoload.php';
+
+if (! is_file($autoloadPath)) {
+    die("ERROR: autoload not found. Run composer install.");
+}
+
+require_once $autoloadPath;
+
+use Symfony\Component\Console\Application;
+use DbJournal\Commands\DbJournalCommand;
+
+use Symfony\Component\Dotenv\Dotenv;
+
+// @TODO: implement .env.test
+
+$envPath = __DIR__.'/../.env';
+
+if (! is_file($envPath)) {
+    die("ERROR: .env file not found on /" . PHP_EOL);
+}
+
+$dotenv = new Dotenv();
+$dotenv->load($envPath);
+
+$app = new Application();
+$app->add(new DbJournalCommand());
+$app->run();
